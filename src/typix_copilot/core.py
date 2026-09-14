@@ -33,7 +33,7 @@ class Firmware:
     layout: str
     nvs_reset: bool
     capabilities: tuple[str, ...]
-    # Registry fields describe downloadable artifacts, never writer approval.
+    # Registry metadata needs a signed catalog grant before hardware writing.
     download_url: str = ""
     publisher: str = ""
     hardware_verified: bool = False
@@ -106,6 +106,8 @@ def _image_end(data: bytes, start: int, limit: int) -> tuple[int, bool]:
         raise ValueError("仅支持结构检查 ESP32-S3 镜像（chip_id 9）。")
     if header[2] > 3 or header[23] not in (0, 1) or any(header[19:23]):
         raise ValueError("ESP 镜像头字段无效或格式暂不支持。")
+    if header[3] >> 4 > 7 or header[3] & 15 not in {0, 1, 2, 15}:
+        raise ValueError("ESP 镜像 Flash 容量或频率字段无效。")
     cursor = start + 24
     checksum = 0xEF
     app_marker = False
@@ -219,6 +221,7 @@ def inspect_local(path: Path) -> dict:
     # Control characters in a local basename must not become UI control content.
     name = "".join(char if char.isprintable() else "�" for char in path.name)
     return {"name": name, "size": len(data), "sha256": digest, "kind": kind,
+            "declared_flash_bytes": (1024 * 1024) << (data[3] >> 4),
             "chip_id": 9, "partitions": partitions, "warnings": warnings}
 
 

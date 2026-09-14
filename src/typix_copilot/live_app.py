@@ -6,24 +6,25 @@ import threading
 
 from .app import CopilotApplication, ChipArt, Gdk, Gio, GLib, Gtk, Pango, add, box, button, label, size_text, styled
 from .cache import ArtifactCache, CacheError
-from .core import inspect_local, load_catalog
+from .authority import bundled_catalog
 from .registry import FirmwareRegistry, merge_catalog
 from . import __version__
-from .live import LiveController, LiveError, WRITABLE_FIRMWARE_ID, event_message
+from .live import LiveController, LiveError, event_message
 
 
 class LiveCopilotApplication(CopilotApplication):
     def __init__(self, fullscreen=False, *, cache=None, controller=None, registry=None):
         # Reuse layout/search widgets, without calling the preview initializer.
         Gtk.Application.__init__(self, application_id="ai.typixdeck.copilot", flags=Gio.ApplicationFlags.FLAGS_NONE)
-        self.catalog = load_catalog()
+        self._bundled_catalog = bundled_catalog()
+        self.catalog = list(self._bundled_catalog)
         self.registry = (FirmwareRegistry(Path.home() / ".cache/typix-copilot/registry")
                          if registry is None else registry)
         self.catalog_status = "内置目录"
         if self.registry:
             try:
                 snapshot = self.registry.cached_catalog()
-                self.catalog = merge_catalog(snapshot)
+                self.catalog = merge_catalog(snapshot, self._bundled_catalog)
                 if snapshot:
                     self.catalog_status = "离线目录"
             except CacheError:
@@ -34,11 +35,13 @@ class LiveCopilotApplication(CopilotApplication):
         self.want_fullscreen = fullscreen
         self.window = self.modal = self.timer = self.task_view = None
         self.navigation_locked = self.importing = False
-        self.inspections = []
         self.local_results = []
         self.operation_return = "detail"
         self.page_name = "store"
         self.selected = self.catalog[0].id
+        self.selected_firmware = self.catalog[0]
+        self.operation_firmware = None
+        self.local_firmwares = []
         self.filter_name, self.search_text = "全部", ""
         self.cancel_event = threading.Event()
         self.last_result = None
@@ -46,7 +49,7 @@ class LiveCopilotApplication(CopilotApplication):
         self._registry_worker = None
         self._registry_cancel = threading.Event()
         self._pending_catalog = None
-        self._closed = self._downloading = False
+        self._closed = False
 
     def do_activate(self):
         if self.window:
@@ -73,7 +76,7 @@ class LiveCopilotApplication(CopilotApplication):
         sidebar = add(middle, box(spacing=5, style="sidebar"))
         sidebar.set_size_request(145, -1)
         self.nav = {}
-        for name, title in (("store", "固件商店"), ("library", "我的固件"), ("device", "协处理器"), ("history", "写入记录")):
+        for name, title in (("store", "固件商店"), ("library", "本地固件"), ("device", "协处理器"), ("history", "写入记录")):
             item = button(title, lambda _b, p=name: self.show_page(p), "nav")
             item.get_child().set_xalign(0)
             add(sidebar, item)
@@ -94,7 +97,8 @@ class LiveCopilotApplication(CopilotApplication):
             records = self.controller.records()
             if records and records[0]["status"] == "running":
                 self.selected = records[0]["firmware_id"]
-                self.controller.job_id = records[0].get("job_id")
+                self.selected_firmware = self.operation_firmware = None
+                self.controller.observe_record(records[0])
                 self._operation_page()
                 self.render_operation({**records[0], "uncertain": True})
         except LiveError:
@@ -112,7 +116,9 @@ class LiveCopilotApplication(CopilotApplication):
         super().show_page(name)
 
     def _apply_catalog(self, remote):
-        self.catalog = merge_catalog(remote)
+        self.catalog = merge_catalog(remote, self._bundled_catalog)
+        # This map belongs only to the visible online catalog. Historical local
+        # rows can share an ID and must retain their own immutable image object.
         self.firmwares = {fw.id: fw for fw in self.catalog}
         if self.selected not in self.firmwares:
             self.selected = self.catalog[0].id
@@ -189,8 +195,7 @@ class LiveCopilotApplication(CopilotApplication):
             add(info, label(f"{publisher} · {fw.version} · {len(versions)} 个版本", "small"))
             add(card, button("查看 →", lambda _b, key=fw.id: self.show_detail(key), "primary"))
         actions = add(self.results, box(False, 12))
-        add(actions, button("＋ 导入固件", self.choose_import), True)
-        add(actions, button("我的固件 →", lambda *_: self.show_page("library")), True)
+        add(actions, button("本地固件 →", lambda *_: self.show_page("library")), True)
         self.results.show_all()
 
     def _cached(self, fw):
@@ -204,10 +209,9 @@ class LiveCopilotApplication(CopilotApplication):
         if self.navigation_locked:
             return
         self.task_view = None
-        if hasattr(self, "download_button"):
-            del self.download_button
         self.selected = identifier
         fw = self.firmwares[identifier]
+        self.selected_firmware = fw
         page = self.make_page("detail")
         head = add(page, box(False, 9))
         add(head, button("←", lambda *_: self.show_page("store"), "flat"))
@@ -216,7 +220,8 @@ class LiveCopilotApplication(CopilotApplication):
         row = add(page, box(False, 10))
         add(row, label("选择版本", "muted"))
         self.version_combo = Gtk.ComboBoxText()
-        for item in self.catalog:
+        versions = self.catalog if fw in self.catalog else [fw, *self.catalog]
+        for item in versions:
             if self.publisher(item) == self.publisher(fw) and (not fw.download_url or item.title == fw.title):
                 self.version_combo.append(item.id, f"{item.version} · {size_text(item.size)}")
         self.version_combo.set_active_id(identifier)
@@ -236,25 +241,22 @@ class LiveCopilotApplication(CopilotApplication):
         if fw.download_url:
             add(detail_box, label("发布者声明已验证" if fw.hardware_verified else "待真机验证", "small"))
             add(detail_box, label("源码提交 " + fw.commit if fw.commit else "本地构建 · 暂无对应源码提交", "small"))
-        if identifier == WRITABLE_FIRMWARE_ID:
-            add(detail_box, label("写入 [0x000000, 0x3cfe88)\n擦除 [0x000000, 0x3d0000)\nNVS 设置将重置", "small", True))
+        erase_end = (fw.size + 4095) // 4096 * 4096
+        add(detail_box, label(f"写入 [0x000000, 0x{fw.size:06x})\n擦除 [0x000000, 0x{erase_end:06x})", "small", True))
         details.add(detail_box)
         add(card, details)
-        if identifier == WRITABLE_FIRMWARE_ID:
-            self.write_button = add(page, button("写入", lambda *_: self.confirm_write(), "primary"))
-        else:
-            add(page, label("此版本尚未开放写入", "muted"))
-            actions = add(page, box(False, 10))
-            self.download_button = add(actions, button("下载固件", lambda *_: self.start_download()), True)
-            self.write_button = add(actions, button("写入", lambda *_: self.confirm_write(), "primary"), True)
-            self.write_button.set_sensitive(False)
+        self.write_button = add(page, button("写入", lambda *_: self.confirm_write(), "primary"))
         self.content.show_all()
 
     def build_library(self, page):
-        row = add(page, box(False, 10))
-        add(row, label("我的固件", "heading"), True)
-        add(row, button("导入 .bin", self.choose_import))
-        cached = [fw for fw in self.catalog if self._cached(fw)]
+        add(page, label("本地固件", "heading"))
+        self.cache_write_buttons, self.cache_remove_buttons = {}, {}
+        try:
+            cached = self.cache.list_cached(self.catalog)
+        except CacheError as error:
+            add(page, label(str(error), "warning", True))
+            return
+        self.local_firmwares = list(cached)
         add(page, label(f"已验证缓存 · {len(cached)} 个版本", "small"))
         if not cached:
             add(page, label("暂无缓存", "muted"))
@@ -263,20 +265,27 @@ class LiveCopilotApplication(CopilotApplication):
             info = add(row, box(spacing=6), True)
             add(info, label(f"{fw.title} · {fw.version}", "subheading", True))
             add(info, label(size_text(fw.size) + " · SHA256 已核对", "small"))
-            add(row, button("查看", lambda _b, key=fw.id: self.show_detail(key)))
-        if self.inspections:
-            add(page, label("本地检查", "small"))
-        for item in self.inspections:
-            card = add(page, box(spacing=8, style="card"))
-            add(card, label(item["name"], "subheading", True))
-            add(card, label("目录文件已缓存" if item.get("known") else "仅检查 · 未开放写入", "warning"))
-            details = Gtk.Expander(label="检查详情")
-            info = box(spacing=6)
-            add(info, label(item["sha256"], "mono", True))
-            for warning in item["warnings"]:
-                add(info, label(warning, "small", True))
-            details.add(info)
-            add(card, details)
+            key = fw
+            self.cache_write_buttons[key] = add(row, button("写入", lambda _b, item=fw: self.prepare_cached_write(item), "primary"))
+            self.cache_remove_buttons[key] = add(row, button("移除缓存", lambda _b, item=fw: self.remove_cached(item)))
+
+    def prepare_cached_write(self, firmware):
+        if self.navigation_locked or self.importing or self.modal:
+            return
+        self.selected = firmware.id
+        self.selected_firmware = firmware
+        self.confirm_write()
+
+    def remove_cached(self, firmware):
+        if self.navigation_locked or self.importing or self.modal:
+            return
+        try:
+            removed = self.cache.remove(firmware)
+        except CacheError as error:
+            self.message(str(error))
+            return
+        self.show_page("library")
+        self.message("缓存已移除" if removed else "此缓存已不存在")
 
     def build_device(self, page):
         add(page, label("板载协处理器", "heading"))
@@ -320,20 +329,24 @@ class LiveCopilotApplication(CopilotApplication):
     def confirm_write(self, *_args):
         if self.navigation_locked or self.modal or self.importing:
             return
-        if self.selected != WRITABLE_FIRMWARE_ID:
-            self.message("此版本尚未开放写入")
+        fw = self.selected_firmware
+        if fw is None:
             return
-        self.operation_return = "detail"
+        # Bind confirmation and execution to these exact signed bytes/metadata,
+        # independent of later catalog updates or another row with the same ID.
+        self.operation_firmware = fw
+        self.operation_return = "library" if self.page_name == "library" else "detail"
         self.task_view = "confirm"
         page = self.make_page("confirmation")
         add(page, label("确认写入", "heading"))
         card = add(page, box(spacing=16, style="card"))
-        add(card, label(self.firmwares[self.selected].title + " · " + self.firmwares[self.selected].version, "title", True))
-        add(card, label("完整写入将重置设置", "warning"))
+        add(card, label(f"{fw.title} · {fw.version}", "title", True))
+        add(card, label("完整写入将重置设置" if fw.nvs_reset else "设置影响见版本说明", "warning"))
         add(card, label("请连接外部电源。", "muted", True))
+        add(card, label("将自动使用本地缓存；没有缓存时下载并校验。", "small", True))
         add(card, label("写入过程中请勿切换、拔线或断电。", "warning", True))
         row = add(page, box(False, 12))
-        self.confirm_back = add(row, button("返回", lambda *_: self.show_detail(self.selected)), True)
+        self.confirm_back = add(row, button("返回", lambda *_: self.return_to_firmware()), True)
         self.confirm_button = add(row, button("确认写入", lambda *_: self.start_operation(), "primary"), True)
         self.content.show_all()
         self.confirm_back.grab_focus()
@@ -344,11 +357,13 @@ class LiveCopilotApplication(CopilotApplication):
         page = self.make_page("operation")
         self.operation_title = add(page, label("准备写入", "heading"))
         card = add(page, box(spacing=16, style="card"))
-        add(card, label(self.firmwares[self.selected].title + " · " + self.firmwares[self.selected].version, "title", True))
+        fw = self.operation_firmware
+        self.operation_firmware_label = add(card, label(
+            f"{fw.title} · {fw.version}" if fw else "历史固件写入任务", "title", True))
         self.progress = add(card, Gtk.ProgressBar())
         self.progress.set_show_text(True)
-        self.operation_status = add(card, label("下载并校验固件", "subheading", True))
-        self.operation_warning = add(card, label("授权开始后无法取消，请保持供电与连接", "warning", True))
+        self.operation_status = add(card, label("准备并校验固件", "subheading", True))
+        self.operation_warning = add(card, label("授权开始后无法取消；请勿切换、拔线或断电", "warning", True))
         self.operation_button = add(page, button("取消", self.operation_response))
         self.message(self.operation_status.get_text())
         self.content.show_all()
@@ -356,11 +371,12 @@ class LiveCopilotApplication(CopilotApplication):
     def start_operation(self, *_args):
         if self.navigation_locked or self.importing or self.modal:
             return
-        fw = self.firmwares[self.selected]
-        if fw.id != WRITABLE_FIRMWARE_ID:
-            self.message("此固件尚未开放写入")
+        fw = self.operation_firmware
+        if fw is None:
             return
+        self.selected = fw.id
         self.cancel_event = threading.Event()
+        self.last_result = None
         self._operation_page()
 
         def worker():
@@ -373,6 +389,18 @@ class LiveCopilotApplication(CopilotApplication):
         self._worker.start()
 
     def render_operation(self, result):
+        candidates = [*self.catalog, *self.local_firmwares]
+        if self.operation_firmware is not None:
+            candidates.append(self.operation_firmware)
+        actual = next((fw for fw in candidates
+                       if (fw.id, fw.version, fw.sha256, fw.size) == (
+                           result.get("firmware_id"), result.get("version"),
+                           result.get("image_sha256"), result.get("image_size"))), None)
+        # An already-running root task can differ from the newly requested
+        # firmware. Never reuse the requested version as that task's identity.
+        self.operation_firmware_label.set_text(
+            f"{actual.title} · {actual.version}" if actual else f"固件 · {result['version']}")
+        self.selected = result["firmware_id"]
         if result["status"] == "succeeded" and not (result.get("verified") and result.get("reconnected")):
             result = {**result, "phase": "failed", "status": "failed", "code": "verification_incomplete"}
         self.last_result = dict(result)
@@ -441,96 +469,23 @@ class LiveCopilotApplication(CopilotApplication):
         return GLib.SOURCE_CONTINUE
 
     def operation_response(self, *_args):
-        if self._downloading:
-            self.cancel_event.set()
-            self.operation_button.set_sensitive(False)
-            self.operation_status.set_text("正在取消…")
-            return
         if self.last_result and self.last_result.get("uncertain"):
             self._refresh_pending()
             return
         if self.navigation_locked:
             self.controller.request_cancel(self.cancel_event)
             return
-        self.show_detail(self.selected)
+        self.return_to_firmware()
 
-    def start_download(self):
-        if self.navigation_locked or self.importing or self.modal:
-            return
-        fw = self.firmwares[self.selected]
-        if not fw.download_url and fw not in load_catalog():
-            return
-        self.cancel_event = threading.Event()
-        self.last_result = None
-        self._operation_page()
-        self._downloading = True
-        self.operation_title.set_text("下载固件")
-        self.operation_warning.set_text("校验后保存在本机；此版本尚未开放写入")
-
-        def update(received, total):
-            if not self._closed and self._downloading:
-                fraction = received / total if total else 0
-                self.progress.set_fraction(fraction)
-                self.progress.set_text(f"{int(fraction * 100)}%")
-            return GLib.SOURCE_REMOVE
-
-        def done(error):
-            self._downloading = False
-            if self._closed:
-                return GLib.SOURCE_REMOVE
-            self.set_navigation_locked(False)
-            self.task_view = "result"
-            self.progress.set_no_show_all(bool(error))
-            self.progress.set_visible(not error)
-            self.operation_title.set_text("下载未完成" if error else "固件已缓存")
-            self.operation_status.set_text(error or "文件大小、SHA256 和镜像结构已校验")
-            self.operation_button.set_sensitive(True)
-            self.operation_button.set_label("返回固件")
-            self.message(self.operation_title.get_text())
-            return GLib.SOURCE_REMOVE
-
-        def worker():
-            try:
-                self.cache.ensure(fw, self.cancel_event, lambda received, total: GLib.idle_add(update, received, total))
-                GLib.idle_add(done, None)
-            except CacheError as error:
-                GLib.idle_add(done, str(error))
-        self._worker = threading.Thread(target=worker, daemon=True, name="copilot-download")
-        self._worker.start()
-
-    def import_path(self, path):
-        if self.importing or self.modal or self.navigation_locked:
-            return
-        self.importing = True
-        self.message("正在检查本地文件")
-
-        def worker():
-            try:
-                data = inspect_local(path)
-                known = next((fw for fw in self.catalog if fw.sha256 == data["sha256"] and fw.size == data["size"]), None)
-                if known:
-                    self.cache.import_known(path, known)
-                data["known"] = known is not None
-                error = None
-            except (CacheError, ValueError, OSError):
-                data, error = None, "文件无法导入，请检查内容和存储空间"
-            GLib.idle_add(done, data, error)
-
-        def done(data, error):
-            self.importing = False
-            if data is not None:
-                self.inspections = [row for row in self.inspections if row["sha256"] != data["sha256"]]
-                self.inspections.insert(0, data)
-                self.show_page("library")
-                self.message("目录文件已缓存" if data["known"] else "文件已检查，未开放写入")
-            else:
-                self.message(error)
-            return GLib.SOURCE_REMOVE
-        threading.Thread(target=worker, daemon=True, name="copilot-file-import").start()
+    def return_to_firmware(self):
+        if self.operation_return == "library" or self.selected not in self.firmwares:
+            self.show_page("library")
+        else:
+            self.show_detail(self.selected)
 
     def close_window(self, *_args):
         if self.navigation_locked:
-            self.message("请先取消下载" if self._downloading else "维护进行中，请勿退出或断电")
+            self.message("维护进行中，请勿切换、退出或断电")
             return True
         self._closed = True
         self._registry_cancel.set()

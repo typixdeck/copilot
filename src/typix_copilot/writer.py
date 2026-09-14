@@ -1,4 +1,4 @@
-"""Privileged maintenance transaction. Fixed artifacts, local backup, actual readback.
+"""Privileged maintenance transaction. Signed artifacts, local backup, actual readback.
 
 No GUI, downloader, shell, user paths, arbitrary serial commands, GPIO or I2C.
 The CLI entry point enforces root-owned installed code/profile/catalog and isolation.
@@ -20,10 +20,10 @@ import time
 import termios
 import uuid
 
-from .core import inspect_local, load_catalog
+from .authority import bundled_catalog, receive_authorization
+from .core import inspect_local
 from .device import Board, DeviceError, load_profile
 
-APPROVED_ID = 'official-20260910'
 STATE_ROOT = Path('/var/lib/typix-copilot')
 VENDOR_ROOT = Path('/usr/lib/typix-copilot/vendor')
 COMMISSIONING_ROOT = Path('/run/typix-copilot')
@@ -122,9 +122,29 @@ def require_space(path, needed):
 
 
 def approved_firmware(identifier):
-    if identifier != APPROVED_ID:
-        raise WriteError('firmware-not-approved')
-    return next(fw for fw in load_catalog() if fw.id == identifier)
+    """Resolve a bundled signed entry for local administrative tooling.
+
+    Desktop requests use receive_authorization instead, preserving the exact
+    signed snapshot selected by the user, including future catalog entries.
+    """
+    try:
+        return next(fw for fw in bundled_catalog() if fw.id == identifier)
+    except (ValueError, StopIteration):
+        raise WriteError('firmware-not-approved') from None
+
+
+def image_capacity(firmware, checked):
+    """Require a complete S3 layout and return its actual Flash footprint."""
+    if (firmware.chip != 'esp32s3' or firmware.board != 'typixdeck'
+            or firmware.image_kind != 'merged-image' or firmware.flash_offset != 0
+            or checked.get('kind') != 'merged-image' or checked.get('chip_id') != 9
+            or checked.get('sha256') != firmware.sha256 or checked.get('size') != firmware.size
+            or not checked.get('partitions')):
+        raise WriteError('image-mismatch')
+    required = max(firmware.size, *(row['offset'] + row['size'] for row in checked['partitions']))
+    if checked.get('declared_flash_bytes') is not None:
+        required = max(required, checked['declared_flash_bytes'])
+    return required
 
 
 def receive_image(source, firmware, path):
@@ -144,15 +164,17 @@ def receive_image(source, firmware, path):
     if len(data) != firmware.size or hashlib.sha256(data).hexdigest() != firmware.sha256:
         raise WriteError('image-mismatch')
     private_write(path, data)
-    checked = inspect_local(path)
-    if checked['sha256'] != firmware.sha256:
-        raise WriteError('image-mismatch')
+    try:
+        image_capacity(firmware, inspect_local(path))
+    except ValueError:
+        raise WriteError('image-mismatch') from None
     return bytes(data)
 
 
 class Journal:
     def __init__(self, root, firmware, sink):
         self.root, self.sink = root, sink
+        self.firmware = firmware
         self.identifier = uuid.uuid4().hex
         self.job = root / 'private' / self.identifier
         ensure_directory(root, 0o755)
@@ -164,6 +186,7 @@ class Journal:
         except (OSError, ValueError, KeyError, TypeError):
             pass
         self.record = dict(job_id=self.identifier, firmware_id=firmware.id, version=firmware.version,
+                           image_sha256=firmware.sha256, image_size=firmware.size,
                            status='running', phase='prepare', progress=0.0,
                            backup_complete=False, write_started=False, verified=False,
                            reconnected=False, runtime_version_confirmed=False,
@@ -290,7 +313,7 @@ def commissioning_permit(journal, board, consume=False):
         actor_uid = int(actor)
         if not 0 <= actor_uid < 2**32 - 1:
             raise WriteError('commissioning-denied')
-        firmware = approved_firmware(journal.record['firmware_id'])
+        firmware = journal.firmware
         if (permit.get('schema') != 1 or permit.get('active') is not True
                 or permit.get('purpose') != 'authorized-first-upgrade-with-power-unverified'
                 or permit.get('profile') != board.profile
@@ -527,11 +550,21 @@ class SerialTransport:
 def execute(firmware, data, journal, transport):
     """The same state machine is tested with a fake transport, never fake in production."""
     try:
+        if journal.firmware != firmware:
+            raise WriteError('image-mismatch')
+        # Recheck the root-staged image before any serial operation. In
+        # particular a short merged file may declare partitions beyond its end.
+        try:
+            required = image_capacity(firmware, inspect_local(journal.job / 'image.bin'))
+        except ValueError:
+            raise WriteError('image-mismatch') from None
+        if len(data) != firmware.size or hashlib.sha256(data).hexdigest() != firmware.sha256:
+            raise WriteError('image-mismatch')
         journal.emit('enter', .11)
         endpoint = transport.enter()
         journal.emit('connect', .15)
         capacity = transport.connect(endpoint)
-        if capacity < len(data):
+        if type(capacity) is not int or capacity < required:
             raise WriteError('flash-size')
         require_space(journal.job, capacity + len(data))
         journal.emit('backup', .18)
@@ -571,7 +604,16 @@ def execute(firmware, data, journal, transport):
                      failed_phase=failed_phase, **diagnostics)
         return 1
     finally:
-        transport.close()
+        try:
+            transport.close()
+        except Exception as exc:
+            # A failed close must not replace durable verification/failure or
+            # make the caller report an already completed transaction as lost.
+            try:
+                journal.emit(journal.record['phase'], journal.record['progress'], durable=True,
+                             audit_degraded=True, cleanup_error_type=exception_diagnostics(exc)['error_type'])
+            except Exception:
+                pass
 
 
 def main():
@@ -588,12 +630,18 @@ def main():
             pass
     journal = None
     lock = None
+    firmware = None
+    identifier = ''
     try:
         if os.geteuid() != 0 or not sys.flags.isolated:
             raise WriteError('authorization-required')
         if len(sys.argv) != 2:
             raise WriteError('invalid-request')
-        firmware = approved_firmware(sys.argv[1])
+        identifier = sys.argv[1]
+        try:
+            firmware = receive_authorization(sys.stdin.buffer, identifier)
+        except ValueError:
+            raise WriteError('firmware-not-approved') from None
         # Drop influence from desktop/user tool configuration before importing esptool.
         for key in list(os.environ):
             if key.startswith(('ESPTOOL', 'PYTHON')) or key in {'XDG_CONFIG_HOME', 'XDG_CONFIG_DIRS'}:
@@ -633,15 +681,27 @@ def main():
         code = exc.code if isinstance(exc, (WriteError, DeviceError)) else 'preflight-failed'
         if journal:
             journal.emit('failed', journal.record['progress'], status='failed', code=code)
-        else:
+        elif firmware is not None:
             sink(dict(status='failed', phase='failed', progress=0., code=code,
-                      firmware_id=APPROVED_ID, version=approved_firmware(APPROVED_ID).version,
+                      firmware_id=firmware.id, version=firmware.version,
+                      image_sha256=firmware.sha256, image_size=firmware.size,
                       backup_complete=False, write_started=False, verified=False,
                       reconnected=False, runtime_version_confirmed=False))
+        else:
+            # No image identity is trusted yet; do not invent a version/hash or
+            # accidentally attribute a rejection to a default official image.
+            safe_identifier = identifier if (isinstance(identifier, str) and len(identifier) <= 96
+                and identifier.isascii() and all(c.isalnum() or c in '._-' for c in identifier)) else ''
+            sink(dict(status='failed', phase='failed', progress=0.,
+                      code='firmware-not-approved', firmware_id=safe_identifier,
+                      authorization_rejected=True))
         return 1
     finally:
         if lock:
-            lock.close()
+            try:
+                lock.close()
+            except OSError:
+                pass
 
 
 if __name__ == '__main__':

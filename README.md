@@ -2,17 +2,19 @@
 
 TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry Pi 主系统上，通过 Launcher 全屏启动。
 
-**0.1.6 支持从 Store 安装和更新**：启动时读取本仓库的 [`firmware/index.json`](firmware/index.json)，按来源展示版本，并下载对应 bin。刷新失败时保留离线目录，缓存文件每次复用都核对大小、SHA-256 和镜像结构。
+**0.2.0：所有目录固件统一「写入」**。选择版本后点击写入，确认后自动复用缓存或下载校验，继续系统授权与写入。无需单独下载。启动时验证本仓库的签名固件目录，离线时使用已验证缓存或随包目录。
 
 已镜像官方 2026-09-10、2026-08-21、2026-08-15、2026-08-14 四个版本，保留原文件及固定哈希。官方条目和 DIY 均从本仓库 `firmware/` 下载，原有缓存直接复用。来源与版本清单见 [官方固件目录](firmware/typixdeck-official/README.md)。
 
-已收录 [DIY 0.3.0 候选与界面预览](firmware/typixdeck-diy/0.3.0/README.md)：全新紧凑卡片界面、真实传感器状态、一小时曲线、黑白琴键、自定义 RGB 与亮暗背景，保留树莓派、时钟、Wi-Fi 与 NTP。0.2.0 继续保留。DIY 候选尚未真机验证，当前提供下载与检查；在线目录不会自动授予写入权限。
+已收录 [DIY 0.3.0 候选与界面预览](firmware/typixdeck-diy/0.3.0/README.md)：全新紧凑卡片界面、真实传感器状态、一小时曲线、黑白琴键、自定义 RGB 与亮暗背景，保留树莓派、时钟、Wi-Fi 与 NTP。0.2.0 继续保留。DIY 候选尚未真机验证；与其他已签名目录版本一样可以发起写入，仍执行完整板级检查。
 
-刷写仍处于实验阶段：官方 2026-09-10 镜像曾实际写入，但独立读回中断；0.1.3 再次复现备份通信失败，完整刷写链路尚未通过 CM4 验收。请暂停重复刷写。
+刷写仍处于实验阶段：官方 2026-09-10 镜像曾实际写入，但独立读回中断；0.1.3 再次复现备份通信失败，完整刷写链路尚未通过 CM4 验收。0.2.0 的软件验证未包含新的真机刷写，不能据此判断通信问题已经解决。
 
 ## 使用
 
 选择固件 → **写入** → 确认。已有缓存会直接复用，缺少时自动下载；确认、进度和结果都在同一窗口。完整写入会重置协处理器设置，写入中请勿切换、拔线或断电。
+
+**本地固件**仅管理之前缓存的版本：可再次写入或移除缓存。带有效签名凭据的旧版本，即使后来不在在线目录中，也可离线使用；移除缓存不会删除设备备份或写入记录。
 
 结果分别记录备份、实际写入、读回校验与重新连接。旧官方固件没有运行版本握手，因此完成后仍显示“运行版本待确认”。恢复方法和授权边界见 [真实写入说明](docs/REAL-WRITER.md)。
 
@@ -26,7 +28,7 @@ TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry P
 
 ```sh
 python3 tools/build-deb.py
-sudo apt install ./dist/typix-copilot_0.1.6-1_arm64.deb
+sudo apt install ./dist/typix-copilot_0.2.0-1_arm64.deb
 install -m 644 /usr/share/applications/typix-copilot.desktop ~/Desktop/typix-copilot.desktop
 ```
 
@@ -42,10 +44,11 @@ python3 tools/check-live-gtk.py
 
 Mac 可双击 [Preview.command](Preview.command)，或运行 `./start-preview.sh`。这是显式离线预览，持续标明“不写入芯片”；正式 deb 默认启动真实模式。
 
-以下为 0.1.4 本机 GTK 界面，载入本仓库发布索引，未执行写入：
+以下为 0.2.0 实际 GTK 界面在本机渲染的截图，使用测试缓存和控制器，未执行真机写入：
 
 ![在线目录布局](docs/screenshots/catalog-store.png)
 ![DIY 固件详情](docs/screenshots/catalog-diy.png)
+![本地固件](docs/screenshots/local-firmware.png)
 
 以下为 CM4 真机 0.1.3 软件界面截图；固件写入结果与限制见上方说明。
 
@@ -67,6 +70,6 @@ Mac 可双击 [Preview.command](Preview.command)，或运行 `./start-preview.sh
 
 软件 Store 分发 Copilot 的 deb，Copilot 管理 ESP32-S3 固件。当前官方方案是重新刷写单 factory 分区，不是多固件常驻引导。
 
-固件发布步骤见 [firmware/README.md](firmware/README.md)。后续新增固件只需提交版本目录并更新索引，无需重打 Copilot deb 即可在刷新后发现；开放该固件的真实写入需要另行审核并更新写入组件。
+固件发布步骤见 [firmware/README.md](firmware/README.md)。后续新增固件提交版本目录、更新索引并签名后，0.2.0 客户端刷新即可发现和发起写入，无需为每个版本重打 Copilot deb。签名仅授权目录中的准确镜像，不允许跳过板级、备份和回读校验。
 
 硬件依据：[官方固件源码](https://github.com/TypixNode/TypixDeck-esp32s3-firmware)、[官方电路设计](https://github.com/TypixNode/TypixDeck-schematics)。实现范围见 [固件来源](docs/ARTIFACT-SOURCES.md)；扩展包格式见 [协议草案](docs/FIRMWARE-FORMAT.md)。

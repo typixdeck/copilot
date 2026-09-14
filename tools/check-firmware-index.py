@@ -10,9 +10,9 @@ from typix_copilot.cache import _known
 from typix_copilot.registry import REGISTRY_BASE, parse_catalog
 
 
-def main():
+def validate_images(data):
     root = ROOT / "firmware"
-    catalog = parse_catalog((root / "index.json").read_bytes())
+    catalog = parse_catalog(data)
     by_id = {fw.id: fw for fw in catalog}
     for bundled in load_catalog():
         if bundled.id not in by_id or by_id[bundled.id].download_url != _known(bundled):
@@ -38,6 +38,20 @@ def main():
     if indexed != set(root.rglob("*.bin")):
         raise ValueError("Every distributed .bin must be listed exactly in the index")
     print(f"Validated {len(catalog)} public firmware artifacts")
+
+
+def main():
+    from typix_copilot.authority import verify_catalog
+    root = ROOT / "firmware"
+    data = (root / "index.json").read_bytes()
+    signature = (root / "index.json.sig").read_bytes()
+    verify_catalog(data, signature)
+    validate_images(data)
+    bundle = ROOT / "src/typix_copilot"
+    if ((bundle / "firmware-index.json").read_bytes() != data
+            or (bundle / "firmware-index.json.sig").read_bytes() != signature):
+        raise ValueError("Bundled signed catalog differs: run tools/sign-firmware-index.py")
+    print("Signature and bundled offline catalog verified")
 
 
 if __name__ == "__main__":

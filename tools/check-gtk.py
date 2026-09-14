@@ -77,7 +77,7 @@ class EmbeddedTransactionTests(unittest.TestCase):
         self.app.prepare_restore(self.ids[1])
         self.app.reset_demo()
         self.app.confirm_write()
-        self.app.choose_import()
+        self.app.remove_cached(self.ids[0])
         self.assertIsNone(self.app.modal)
         for key, state in ((Gdk.KEY_Escape, 0), (Gdk.KEY_F11, 0), (Gdk.KEY_f, Gdk.ModifierType.CONTROL_MASK)):
             self.assertTrue(self.app.on_key(self.app.window, SimpleNamespace(keyval=key, state=state)))
@@ -170,6 +170,22 @@ class EmbeddedTransactionTests(unittest.TestCase):
             phases.append(self.app.simulation.active['phase'])
         self.assertNotIn('download', phases)
         self.assertIn('write', phases)
+
+    def test_local_firmware_manages_preview_cache_without_import(self):
+        self.start()
+        self.finish()
+        current = self.app.simulation.current
+        self.app.show_page('library')
+        self.assertEqual(self.app.nav['library'].get_label(), '本地固件')
+        self.assertFalse(hasattr(self.app, 'import_button'))
+        self.app.cache_write_buttons[self.ids[0]].emit('clicked')
+        self.assertEqual(self.app.page_name, 'confirmation')
+        self.app.confirm_back.emit('clicked')
+        self.assertEqual(self.app.page_name, 'library')
+        self.app.cache_remove_buttons[self.ids[0]].emit('clicked')
+        self.assertNotIn(self.ids[0], self.app.simulation.cached)
+        self.assertEqual(self.app.simulation.current, current)
+        self.assertEqual(self.app.cache_remove_buttons, {})
 
     def test_disconnect_preserves_current_and_releases_navigation(self):
         self.app.scenario = 'disconnected'

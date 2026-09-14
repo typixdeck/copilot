@@ -8,9 +8,12 @@ callable taking a urllib Request and a keyword-only ``timeout`` argument.
 from __future__ import annotations
 
 from contextlib import contextmanager, suppress
+from dataclasses import asdict
+from functools import wraps
 import errno
 import hashlib
 import http.client
+import json
 import os
 from pathlib import Path
 import re
@@ -92,6 +95,16 @@ def _known(firmware: Firmware) -> str:
     # the byte-identical public mirror is the unified download location.
     return ("https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/"
             f"typixdeck-official/{firmware.version}/{firmware.filename}")
+
+
+def _cache_io(function):
+    @wraps(function)
+    def checked(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except OSError as exc:
+            raise _io_error(exc) from None
+    return checked
 
 
 class ArtifactCache:
@@ -193,6 +206,163 @@ class ArtifactCache:
             return self.root / name if valid else None
 
     @staticmethod
+    def _proof_name(firmware):
+        identity = json.dumps(asdict(firmware), sort_keys=True, ensure_ascii=True,
+                              separators=(",", ":")).encode("ascii")
+        return firmware.sha256 + "." + hashlib.sha256(identity).hexdigest() + ".proof"
+
+    @staticmethod
+    def _proof_names(descriptor):
+        with os.scandir(descriptor) as entries:
+            for count, entry in enumerate(entries, 1):
+                if count > 4096:
+                    raise CacheError("缓存目录条目过多，请先清理无关文件。")
+                if re.fullmatch(r"[0-9a-f]{64}(?:\.[0-9a-f]{64})?\.proof", entry.name):
+                    yield entry.name
+
+    def _proof(self, descriptor, name):
+        from .authority import MAX_AUTHORIZATION_BYTES, decode_catalog
+        before = self._entry(descriptor, name)
+        if before is None:
+            return None
+        limit = MAX_AUTHORIZATION_BYTES + 81
+        if not 0 < before.st_size <= limit:
+            raise CacheError("缓存固件的目录凭据大小无效。")
+        with os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                              dir_fd=descriptor), "rb") as source:
+            opened = os.fstat(source.fileno())
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                    or self._identity(opened) != self._identity(before)):
+                raise CacheError("缓存固件的目录凭据已变化。")
+            data = source.read(limit + 1)
+            after = os.fstat(source.fileno())
+            if len(data) != opened.st_size or self._stable(opened) != self._stable(after):
+                raise CacheError("缓存固件的目录凭据读取期间已变化。")
+        self._same_directory(descriptor)
+        identifier, separator, frame = data.partition(b"\n")
+        if not separator or not re.fullmatch(rb"[a-z0-9][a-z0-9._-]{0,79}", identifier):
+            raise CacheError("缓存固件的版本标识无效。")
+        try:
+            rows = decode_catalog(frame)
+        except ValueError as exc:
+            raise CacheError(str(exc)) from None
+        return next((fw for fw in rows if fw.id == identifier.decode("ascii")
+                     and name in {fw.sha256 + ".proof", self._proof_name(fw)}), None)
+
+    @_cache_io
+    def restore_authorization(self, firmware: Firmware) -> bool:
+        """Restore a cached signed grant before writing a historical version."""
+        _known(firmware)
+        with self._directory() as descriptor:
+            if descriptor is None:
+                return False
+            return (self._proof(descriptor, self._proof_name(firmware)) == firmware
+                    or self._proof(descriptor, firmware.sha256 + ".proof") == firmware)
+
+    @_cache_io
+    def _remember(self, firmware):
+        from .authority import encode_authorization
+        try:
+            frame = encode_authorization(firmware)
+        except ValueError:
+            # Legacy standalone download tests/callers carry no writer grant.
+            # Such files cannot appear as authorized historical cache entries.
+            return
+        data = firmware.id.encode("ascii") + b"\n" + frame
+        name = self._proof_name(firmware)
+        with self._directory(create=True) as descriptor:
+            self._entry(descriptor, name)
+            self._space(descriptor, len(data))
+            with self._stage(descriptor) as (stage, output):
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+                staged = self._entry(descriptor, stage)
+                if staged is None or self._identity(os.fstat(output.fileno())) != self._identity(staged):
+                    raise CacheError("临时目录凭据已变化，请重试。")
+                self._same_directory(descriptor)
+                self._entry(descriptor, name)
+                os.replace(stage, name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+                self._sync_directory(descriptor)
+                self._same_directory(descriptor)
+
+    @_cache_io
+    def list_cached(self, known_catalog=None) -> list[Firmware]:
+        """List only verified cached bytes; signed sidecars retain older versions."""
+        from .authority import bundled_catalog, authorize_firmware
+        candidates = {}
+        for fw in bundled_catalog() if known_catalog is None else known_catalog:
+            try:
+                authorize_firmware(fw)
+            except ValueError:
+                continue
+            candidates[self._proof_name(fw)] = fw
+        with self._directory() as descriptor:
+            if descriptor is not None:
+                names = list(self._proof_names(descriptor))
+                managed = {name[:64] for name in names}
+                # A legacy bare BIN can be discovered using the signed catalog.
+                # Once grants exist, they are the retained-version inventory;
+                # the online catalog must not resurrect a removed shared alias.
+                candidates = {key: fw for key, fw in candidates.items() if fw.sha256 not in managed}
+                for name in names:
+                    try:
+                        fw = self._proof(descriptor, name)
+                        if fw is not None:
+                            candidates[self._proof_name(fw)] = fw
+                    except (CacheError, OSError, ValueError):
+                        continue
+        return [fw for fw in candidates.values() if self.cached(fw) is not None]
+
+    @_cache_io
+    def remove(self, firmware: Firmware) -> bool:
+        """Remove this version's grant; retain bytes shared by another version."""
+        _known(firmware)
+        removed = False
+        with self._directory() as descriptor:
+            if descriptor is None:
+                return False
+            binary = firmware.sha256 + ".bin"
+            legacy = firmware.sha256 + ".proof"
+            proof = self._proof_name(firmware)
+            names = [proof]
+            # Validate every target before deleting either one.
+            entries = {name: self._entry(descriptor, name) for name in (binary, proof, legacy)}
+            shared = False
+            for name in self._proof_names(descriptor):
+                if not name.startswith(firmware.sha256 + "."):
+                    continue
+                try:
+                    retained = self._proof(descriptor, name)
+                except (CacheError, ValueError, OSError):
+                    continue
+                if retained is not None:
+                    if retained == firmware:
+                        if name == legacy:
+                            names.append(legacy)
+                    else:
+                        shared = True
+            if not shared:
+                names.append(binary)
+            self._same_directory(descriptor)
+            for name in names:
+                if entries[name] is not None:
+                    os.unlink(name, dir_fd=descriptor)
+                    removed = True
+            if removed:
+                self._sync_directory(descriptor)
+            self._same_directory(descriptor)
+        return removed
+
+    @staticmethod
+    def _sync_directory(descriptor):
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+                raise
+
+    @staticmethod
     def _space(descriptor, size):
         info = os.fstatvfs(descriptor)
         if info.f_bavail * info.f_frsize < size + FREE_SPACE_RESERVE:
@@ -232,6 +402,7 @@ class ArtifactCache:
                 if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
                     raise
         self._same_directory(descriptor)
+        self._remember(firmware)
         return self.root / name
 
     def ensure(self, firmware: Firmware, cancel: threading.Event | None = None,
@@ -241,6 +412,7 @@ class ArtifactCache:
         existing = self.cached(firmware)
         if existing is not None:
             _check_cancel(cancel)
+            self._remember(firmware)
             if progress:
                 progress(firmware.size, firmware.size)
             return existing
@@ -338,6 +510,7 @@ class ArtifactCache:
                     self._copy_known(source, opened, firmware)
                     existing = self.cached(firmware)
                     if existing is not None:
+                        self._remember(firmware)
                         return existing
                     source.seek(0)
                 with self._directory(create=True) as descriptor:

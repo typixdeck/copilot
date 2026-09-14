@@ -1,4 +1,4 @@
-"""Bounded online firmware metadata; this module never authorizes device writes.
+"""Bounded, signed online firmware metadata and atomic offline snapshots.
 
 Only the public typixdeck/copilot repository is used for metadata and binary
 transfers. A saved snapshot is revalidated when read; the bundled approval
@@ -26,11 +26,12 @@ from .cache import ArtifactCache, CacheError, Cancelled, _check_cancel, _io_erro
 
 REGISTRY_BASE = "https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/"
 REGISTRY_URL = REGISTRY_BASE + "index.json"
+SIGNATURE_URL = REGISTRY_BASE + "index.json.sig"
 MAX_INDEX_BYTES = 256 * 1024
 MAX_FIRMWARES = 100
 HTTP_TIMEOUT = 10
 FETCH_DEADLINE = 30
-SNAPSHOT_NAME = "firmware-index.json"
+SNAPSHOT_NAME = "firmware-index.signed"
 _BASE_FIELDS = {
     "id", "version", "title", "summary", "filename", "size", "sha256",
     "source_url", "commit", "layout", "nvs_reset", "capabilities",
@@ -161,9 +162,9 @@ def parse_catalog(data: bytes) -> list[Firmware]:
     return catalog
 
 
-def merge_catalog(remote: list[Firmware]) -> list[Firmware]:
+def merge_catalog(remote: list[Firmware], bundled=None) -> list[Firmware]:
     """Keep exact bundled objects for pinned rows and append validated new rows."""
-    bundled = load_catalog()
+    bundled = list(load_catalog() if bundled is None else bundled)
     by_id = {firmware.id: firmware for firmware in bundled}
     seen = set()
     for firmware in remote:
@@ -185,6 +186,7 @@ class FirmwareRegistry:
         self._opener = _open_https
 
     def cached_catalog(self) -> list[Firmware]:
+        from .authority import MAX_AUTHORIZATION_BYTES, decode_catalog
         try:
             with self._storage._directory() as descriptor:
                 if descriptor is None:
@@ -192,7 +194,7 @@ class FirmwareRegistry:
                 before = self._storage._entry(descriptor, SNAPSHOT_NAME)
                 if before is None:
                     return []
-                if not 0 < before.st_size <= MAX_INDEX_BYTES:
+                if not 0 < before.st_size <= MAX_AUTHORIZATION_BYTES:
                     raise RegistryError("缓存目录大小无效。")
                 flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
                 with os.fdopen(os.open(SNAPSHOT_NAME, flags, dir_fd=descriptor), "rb") as source:
@@ -200,19 +202,21 @@ class FirmwareRegistry:
                     if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
                             or self._storage._identity(before) != self._storage._identity(opened)):
                         raise RegistryError("固件目录缓存已变化。")
-                    data = source.read(MAX_INDEX_BYTES + 1)
+                    data = source.read(MAX_AUTHORIZATION_BYTES + 1)
                     after = os.fstat(source.fileno())
                     if (self._storage._stable(opened) != self._storage._stable(after)
                             or len(data) != opened.st_size):
                         raise RegistryError("固件目录缓存读取期间已变化。")
                 self._storage._same_directory(descriptor)
-                return parse_catalog(data)
+                return decode_catalog(data, canonical=False)
         except RegistryError:
             raise
         except CacheError as exc:
             raise RegistryError(str(exc)) from None
         except OSError as exc:
             raise RegistryError(str(_io_error(exc))) from None
+        except ValueError as exc:
+            raise RegistryError(str(exc)) from None
 
     def _save(self, data, cancel):
         with self._storage._directory(create=True) as descriptor:
@@ -238,43 +242,21 @@ class FirmwareRegistry:
                 self._storage._same_directory(descriptor)
 
     def fetch_catalog(self, cancel=None) -> list[Firmware]:
+        from .authority import MAGIC, verify_catalog
+        import struct
         _check_cancel(cancel)
-        request = urllib.request.Request(REGISTRY_URL, headers={
-            "Accept": "application/json", "Accept-Encoding": "identity",
-        })
         deadline = time.monotonic() + FETCH_DEADLINE
+        def fetch(url, limit, accept):
+            request = urllib.request.Request(url, headers={
+                "Accept": accept, "Accept-Encoding": "identity",
+            })
+            return self._fetch_bytes(request, url, limit, deadline, cancel)
         try:
-            with self._opener(request, timeout=HTTP_TIMEOUT) as response:
-                if response.getcode() != 200 or response.geturl() != REGISTRY_URL:
-                    raise RegistryError("在线固件目录响应异常。")
-                length = response.headers.get("Content-Length")
-                if (response.headers.get("Content-Encoding", "identity").lower() != "identity"
-                        or length is not None and (not re.fullmatch(r"[0-9]{1,9}", length)
-                                                  or not 0 < int(length) <= MAX_INDEX_BYTES)):
-                    raise RegistryError("在线固件目录大小或编码无效。")
-                chunks = []
-                received = 0
-                read_chunk = getattr(response, "read1", response.read)
-                while True:
-                    _check_cancel(cancel)
-                    if time.monotonic() >= deadline:
-                        raise RegistryError("在线固件目录请求超时。")
-                    chunk = read_chunk(min(16 * 1024, MAX_INDEX_BYTES - received + 1))
-                    _check_cancel(cancel)
-                    if time.monotonic() >= deadline:
-                        raise RegistryError("在线固件目录请求超时。")
-                    if not chunk:
-                        break
-                    received += len(chunk)
-                    if received > MAX_INDEX_BYTES:
-                        raise RegistryError("在线固件目录超过 256 KiB。")
-                    chunks.append(chunk)
-                if length is not None and int(length) != received:
-                    raise RegistryError("在线固件目录下载不完整。")
-            data = b"".join(chunks)
-            catalog = parse_catalog(data)
+            data = fetch(REGISTRY_URL, MAX_INDEX_BYTES, "application/json")
+            signature = fetch(SIGNATURE_URL, 64, "application/octet-stream")
+            catalog = verify_catalog(data, signature)
             _check_cancel(cancel)
-            self._save(data, cancel)
+            self._save(MAGIC + struct.pack("!I", len(data)) + signature + data, cancel)
             return catalog
         except (RegistryError, Cancelled):
             raise
@@ -288,3 +270,35 @@ class FirmwareRegistry:
         except (OSError, urllib.error.URLError, http.client.HTTPException) as exc:
             _check_cancel(cancel)
             raise RegistryError(str(_io_error(exc))) from None
+        except ValueError as exc:
+            raise RegistryError(str(exc)) from None
+
+    def _fetch_bytes(self, request, url, limit, deadline, cancel):
+        with self._opener(request, timeout=HTTP_TIMEOUT) as response:
+            if response.getcode() != 200 or response.geturl() != url:
+                raise RegistryError("在线固件目录响应异常。")
+            length = response.headers.get("Content-Length")
+            if (response.headers.get("Content-Encoding", "identity").lower() != "identity"
+                    or length is not None and (not re.fullmatch(r"[0-9]{1,9}", length)
+                                              or not 0 < int(length) <= limit)):
+                raise RegistryError("在线固件目录大小或编码无效。")
+            chunks = []
+            received = 0
+            read_chunk = getattr(response, "read1", response.read)
+            while True:
+                _check_cancel(cancel)
+                if time.monotonic() >= deadline:
+                    raise RegistryError("在线固件目录请求超时。")
+                chunk = read_chunk(min(16 * 1024, limit - received + 1))
+                _check_cancel(cancel)
+                if time.monotonic() >= deadline:
+                    raise RegistryError("在线固件目录请求超时。")
+                if not chunk:
+                    break
+                received += len(chunk)
+                if received > limit:
+                    raise RegistryError("在线固件目录或签名超过大小上限。")
+                chunks.append(chunk)
+            if length is not None and int(length) != received:
+                raise RegistryError("在线固件目录下载不完整。")
+        return b"".join(chunks)

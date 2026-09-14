@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import struct
 import threading
 from types import SimpleNamespace
 import unittest
@@ -15,6 +16,8 @@ from unittest.mock import Mock, patch
 import urllib.error
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from typix_copilot import authority
 from typix_copilot import registry as module
 from typix_copilot.cache import Cancelled
 from typix_copilot.core import load_catalog
@@ -131,10 +134,21 @@ class RegistryTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.registry = FirmwareRegistry(self.root / "registry")
+        self.key = Ed25519PrivateKey.generate()
+        trust_patch = patch.object(authority, "_public_key", return_value=self.key.public_key())
+        trust_patch.start()
+        self.addCleanup(trust_patch.stop)
+        authority._proofs.clear()
+        self.addCleanup(authority._proofs.clear)
         self.data = document()
+        self.signature = self.key.sign(self.data)
+        self.frame = authority.MAGIC + struct.pack("!I", len(self.data)) + self.signature + self.data
         self.target = self.registry._storage.root / module.SNAPSHOT_NAME
-        self.opener = Mock(side_effect=lambda req, **kw: Response(
-            self.data, module.REGISTRY_URL, headers={"Content-Length": str(len(self.data))}))
+        def response(req, **kw):
+            self.assertIn(req.full_url, (module.REGISTRY_URL, module.SIGNATURE_URL))
+            payload = self.data if req.full_url == module.REGISTRY_URL else self.signature
+            return Response(payload, req.full_url, headers={"Content-Length": str(len(payload))})
+        self.opener = Mock(side_effect=response)
         self.registry._opener = self.opener
 
     def assert_no_partial(self):
@@ -145,10 +159,14 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(self.target.parent.exists())
         result = self.registry.fetch_catalog()
         self.assertEqual(result, parse_catalog(self.data))
-        self.assertEqual(self.target.read_bytes(), self.data)
-        self.assertEqual(self.opener.call_args.args[0].full_url, module.REGISTRY_URL)
-        self.assertEqual(self.opener.call_args.kwargs, {"timeout": module.HTTP_TIMEOUT})
-        self.assertEqual(self.opener.call_args.args[0].get_header("Accept-encoding"), "identity")
+        self.assertEqual(self.target.read_bytes(), self.frame)
+        self.assertEqual([call.args[0].full_url for call in self.opener.call_args_list],
+                         [module.REGISTRY_URL, module.SIGNATURE_URL])
+        for call in self.opener.call_args_list:
+            self.assertEqual(call.kwargs, {"timeout": module.HTTP_TIMEOUT})
+            self.assertEqual(call.args[0].get_header("Accept-encoding"), "identity")
+        authority._proofs.clear()
+        self.assertEqual(FirmwareRegistry(self.target.parent).cached_catalog(), result)
         self.registry._opener = Mock(side_effect=urllib.error.URLError("offline"))
         with self.assertRaises(RegistryError):
             self.registry.fetch_catalog()
@@ -174,6 +192,44 @@ class RegistryTests(unittest.TestCase):
             with self.assertRaises(RegistryError):
                 self.registry.fetch_catalog()
             self.assertTrue(response.closed)
+            self.assertEqual(self.target.read_bytes(), previous)
+        self.assert_no_partial()
+
+    def test_invalid_signature_or_signed_invalid_schema_preserves_previous_snapshot(self):
+        self.registry.fetch_catalog()
+        previous = self.target.read_bytes()
+        candidates = [
+            (self.data, bytes(64)),
+            (self.data, self.signature[:-1]),
+            (self.data, self.signature + b"x"),
+            (self.data, Ed25519PrivateKey.generate().sign(self.data)),
+            (document([{**row(), "title": "Tampered metadata"}]), self.signature),
+            (b'{"schema":2,"firmwares":[]}', self.key.sign(b'{"schema":2,"firmwares":[]}')),
+        ]
+        for data, signature in candidates:
+            def response(req, **kw):
+                payload = data if req.full_url == module.REGISTRY_URL else signature
+                return Response(payload, req.full_url)
+            self.registry._opener = Mock(side_effect=response)
+            with self.subTest(data=data[:32], length=len(signature)), self.assertRaises(RegistryError):
+                self.registry.fetch_catalog()
+            self.assertEqual(self.target.read_bytes(), previous)
+            self.assertEqual(self.registry.cached_catalog(), parse_catalog(self.data))
+        self.assert_no_partial()
+
+    def test_signature_transport_cannot_redirect_or_use_compression(self):
+        self.registry.fetch_catalog()
+        previous = self.target.read_bytes()
+        for wrong in (
+            Response(self.signature, "https://localhost/signature"),
+            Response(self.signature, module.SIGNATURE_URL, status=206),
+            Response(self.signature, module.SIGNATURE_URL, headers={"Content-Encoding": "gzip"}),
+        ):
+            self.registry._opener = Mock(side_effect=lambda req, **kw:
+                Response(self.data, req.full_url) if req.full_url == module.REGISTRY_URL else wrong)
+            with self.assertRaises(RegistryError):
+                self.registry.fetch_catalog()
+            self.assertTrue(wrong.closed)
             self.assertEqual(self.target.read_bytes(), previous)
         self.assert_no_partial()
 

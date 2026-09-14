@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from typix_copilot import cache as cache_module, live
 from typix_copilot.cache import ArtifactCache
 from typix_copilot.core import load_catalog
+from typix_copilot.authority import bundled_catalog
 from test_core import merged_bytes
 from test_cache import Response
 
@@ -51,8 +52,18 @@ class ControllerTests(unittest.TestCase):
                                 sha256=hashlib.sha256(self.bytes).hexdigest(),
                                 source_url=original.source_url.rsplit("/", 1)[0] + "/TEST_ONLY.bin")
         self.other = load_catalog()[1]
-        for module in (live, cache_module):
+        for module in (cache_module,):
             mocked = patch.object(module, "load_catalog", return_value=[self.firmware, self.other])
+            mocked.start()
+            self.addCleanup(mocked.stop)
+        self.authorization = b"TEST-ONLY-AUTHORIZATION\n"
+        def authorize(firmware):
+            if firmware not in (self.firmware, self.other):
+                raise ValueError("not signed")
+            return firmware
+        for name, replacement in (("authorize_firmware", authorize),
+                                  ("encode_authorization", lambda fw: self.authorization)):
+            mocked = patch.object(live, name, side_effect=replacement)
             mocked.start()
             self.addCleanup(mocked.stop)
         self.cache = ArtifactCache(self.root / "cache")
@@ -63,6 +74,7 @@ class ControllerTests(unittest.TestCase):
 
     def event(self, phase="prepare", status="running", **fields):
         event = dict(phase=phase, status=status, firmware_id=self.firmware.id, version=self.firmware.version,
+                     image_sha256=self.firmware.sha256, image_size=self.firmware.size,
                      job_id="a" * 32, progress=1. if status == "succeeded" else .1,
                      backup_complete=False, write_started=False, verified=False, reconnected=False,
                      runtime_version_confirmed=False)
@@ -76,7 +88,7 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(events[-1]["phase"], "authorize")
             self.assertFalse(self.controller.can_cancel)
             self.assertEqual(argv, ["/usr/bin/pkexec", "/usr/libexec/typix-copilot-write", "official-20260910"])
-            self.assertEqual(kwargs["stdin"].read(), self.bytes)
+            self.assertEqual(kwargs["stdin"].read(), self.authorization + self.bytes)
             kwargs["stdin"].seek(0)
             self.assertEqual(kwargs["stdout"], subprocess.PIPE)
             self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
@@ -187,7 +199,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_unsupported_target_busy_and_existing_running_record_reject_new_work(self):
         with self.assertRaises(live.LiveError):
-            self.controller.run_write(self.other)
+            self.controller.run_write(replace(self.other, sha256="0" * 64))
         self.controller._lock.acquire()
         try:
             with self.assertRaisesRegex(live.LiveError, "已有维护"):
@@ -203,6 +215,92 @@ class ControllerTests(unittest.TestCase):
         result = self.controller.run_write(self.firmware, on_event=Mock(side_effect=RuntimeError("UI closed")))
         self.assertEqual(result["status"], "succeeded")
 
+    def test_every_signed_catalog_selection_sends_its_own_identity_and_one_packet(self):
+        path = self.root / "selected.bin"
+        path.write_bytes(self.bytes)
+        for published in bundled_catalog():
+            with self.subTest(firmware=published.id):
+                selected = replace(published, size=len(self.bytes), sha256=hashlib.sha256(self.bytes).hexdigest())
+                event = {**self.event("complete", "succeeded", verified=True, reconnected=True),
+                         "firmware_id": selected.id, "version": selected.version,
+                         "image_sha256": selected.sha256, "image_size": selected.size}
+                child = Child([event])
+                def spawn(argv, **kwargs):
+                    self.assertEqual(argv[-1], selected.id)
+                    self.assertEqual(kwargs["stdin"].read(), self.authorization + self.bytes)
+                    return child
+                self.spawn.side_effect = spawn
+                with patch.object(live, "authorize_firmware", return_value=selected), \
+                     patch.object(self.cache, "restore_authorization", return_value=False), \
+                     patch.object(self.cache, "ensure", return_value=path) as ensure:
+                    result = self.controller.run_write(selected)
+                ensure.assert_called_once()
+                self.assertEqual(result["status"], "succeeded")
+                self.assertEqual((result["firmware_id"], result["version"], result["image_sha256"]),
+                                 (selected.id, selected.version, selected.sha256))
+
+    def test_cached_signed_grant_is_restored_before_authorizing_historical_selection(self):
+        restored = []
+        def authorize(firmware):
+            self.assertEqual(restored, [firmware])
+            return firmware
+        with patch.object(self.cache, "restore_authorization", side_effect=lambda fw: restored.append(fw) or True), \
+             patch.object(live, "authorize_firmware", side_effect=authorize):
+            self.assertEqual(self.controller.run_write(self.firmware)["status"], "succeeded")
+
+    def test_root_rejects_signed_envelope_without_inventing_image_identity(self):
+        self.child = Child([dict(status="failed", phase="failed", progress=0.,
+                                 code="firmware-not-approved", firmware_id=self.firmware.id,
+                                 authorization_rejected=True)], returncode=1)
+        result = self.controller.run_write(self.firmware)
+        self.assertEqual(result["code"], "firmware-not-approved")
+        self.assertFalse(result["write_started"])
+        self.assertEqual(result["image_sha256"], self.firmware.sha256)
+
+    def test_cleanup_error_preserves_completed_result_and_releases_controller(self):
+        class CloseFails(io.BytesIO):
+            def close(self):
+                raise OSError("test-only close failure")
+        packet = CloseFails(self.authorization + self.bytes)
+        self.child.stdout = CloseFails(self.child.stdout.getvalue())
+        with patch.object(self.controller, "_source", return_value=packet):
+            result = self.controller.run_write(self.firmware)
+        self.assertEqual(result["status"], "succeeded")
+        self.assertFalse(self.controller.busy)
+        self.assertTrue(self.controller._lock.acquire(blocking=False))
+        self.controller._lock.release()
+        io.BytesIO.close(packet)
+        io.BytesIO.close(self.child.stdout)
+
+    def test_historical_removed_version_readable_but_never_bound_to_different_image(self):
+        historic = self.event(firmware_id="third-party-removed", version="旧版本 1",
+                              image_sha256="c" * 64)
+        self.assertEqual(live.sanitize_event(historic)["version"], "旧版本 1")
+        legacy = {key: value for key, value in self.event().items()
+                  if key not in {"image_sha256", "image_size"}}
+        self.assertNotIn("image_sha256", live.sanitize_event(legacy))
+        legacy_verified = {**legacy, "image_sha256": self.firmware.sha256}
+        self.assertEqual(live.sanitize_event(legacy_verified)["image_sha256"], self.firmware.sha256)
+        self.controller.firmware = self.firmware
+        self.controller.status_revision = (1,)
+        self.controller.previous_jobs = set()
+        for row in (historic, legacy, legacy_verified, self.event(image_sha256="d" * 64), self.event(version="different")):
+            with self.subTest(row=row):
+                self.controller.job_id = None
+                self.controller._status_reader = lambda: ([row], (2,))
+                self.assertIsNone(self.controller.pending_record())
+                self.controller.job_id = row["job_id"]
+                self.assertIsNone(self.controller.pending_record())
+
+    def test_wrong_hash_size_or_missing_image_identity_cannot_report_current_success(self):
+        terminal = self.event("complete", "succeeded", verified=True, reconnected=True)
+        for changes in ({"image_sha256": "c" * 64}, {"image_size": self.firmware.size + 1}):
+            self.child = Child([{**terminal, **changes}])
+            self.assertEqual(self.controller.run_write(self.firmware)["code"], "protocol_error")
+        self.child = Child([{key: value for key, value in terminal.items()
+                             if key not in {"image_sha256", "image_size"}}])
+        self.assertEqual(self.controller.run_write(self.firmware)["code"], "protocol_error")
+
     def test_audit_failure_is_visible_without_discarding_actual_verification(self):
         self.child = Child([self.event("complete", "succeeded", verified=True, reconnected=True, audit_degraded=True)])
         result = self.controller.run_write(self.firmware)
@@ -212,6 +310,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_status_refresh_matches_job_and_never_reuses_old_success(self):
         old = self.event("complete", "succeeded", verified=True, reconnected=True, job_id="b" * 32)
+        self.controller.firmware = self.firmware
         self.controller.job_id = "a" * 32
         self.controller._status_reader = lambda: ([old], (2,))
         self.assertIsNone(self.controller.pending_record())
@@ -221,8 +320,22 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNone(self.controller.pending_record())
         new = self.event("write", write_started=True)
         self.controller._status_reader = lambda: ([new, old], (2,))
-        self.assertEqual(self.controller.pending_record(), new)
+        self.assertIsNone(self.controller.pending_record())
+        self.controller.job_id = new["job_id"]
+        self.assertEqual(self.controller.pending_record(), live.sanitize_event(new, self.firmware))
         self.assertEqual(self.controller.job_id, "a" * 32)
+
+    def test_explicit_root_job_monitor_survives_removed_firmware_and_legacy_status(self):
+        legacy = {key: value for key, value in self.event(firmware_id="removed-1", version="1.0").items()
+                  if key not in {"image_sha256", "image_size"}}
+        self.controller.observe_record(legacy)
+        terminal = {**legacy, "phase": "complete", "status": "succeeded", "progress": 1.,
+                    "verified": True, "reconnected": True, "image_sha256": "c" * 64}
+        self.controller._status_reader = lambda: ([terminal], (2,))
+        self.assertEqual(self.controller.pending_record(), live.sanitize_event(terminal))
+        for changes in ({"job_id": "b" * 32}, {"firmware_id": "other-id"}, {"version": "1.1"}):
+            self.controller._status_reader = lambda: ([{**terminal, **changes}], (2,))
+            self.assertIsNone(self.controller.pending_record())
 
     def test_sanitizer_drops_backend_text_identity_and_unknown_error_codes(self):
         event = self.event("failed", "failed", message="private UART data", serial="unique",
@@ -233,7 +346,8 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(clean["runtime_version_confirmed"])
         self.assertEqual(clean["code"], "helper_failed")
         for fields in ({"progress": float("nan")}, {"progress": 2}, {"progress": True}, {"verified": 1},
-                       {"job_id": "device unique id"}, {"version": "untrusted"}):
+                       {"job_id": "device unique id"}, {"version": "\nunsafe"},
+                       {"image_sha256": "bad"}, {"image_size": True}):
             with self.subTest(fields=fields), self.assertRaises(live.LiveError):
                 live.sanitize_event({**event, **fields})
 

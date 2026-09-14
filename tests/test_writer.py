@@ -12,8 +12,10 @@ import sys
 import termios
 
 from typix_copilot.core import load_catalog
+from typix_copilot.authority import bundled_catalog, encode_authorization, receive_authorization
+from test_core import image_bytes, merged_bytes
 from typix_copilot.device import Board, DeviceError
-from typix_copilot.writer import (Journal, WriteError, approved_firmware, execute,
+from typix_copilot.writer import (Journal, WriteError, approved_firmware, execute, image_capacity,
                                 exception_diagnostics, receive_image, safe_power_config, SerialTransport)
 
 
@@ -27,7 +29,7 @@ class Transport:
             raise WriteError('test-failure')
 
     def enter(self): self.call('enter'); return 'bound-port'
-    def connect(self, endpoint): self.call('connect'); return 8192
+    def connect(self, endpoint): self.call('connect'); return 1024 * 1024
     def read(self, size, phase):
         self.call(phase)
         return b'X' * size if phase == 'backup' or self.fail == 'mismatch' else self.data
@@ -40,10 +42,18 @@ class WriterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / 'state'
-        self.data = b'real-test-byte-sequence'
+        # Explicit synthetic merged image with a valid 1 MiB Flash declaration.
+        fixture = bytearray(merged_bytes(partitions=[
+            (1, 2, 0x9000, 0x6000, b"nvs"), (1, 1, 0xF000, 0x1000, b"phy_init"),
+            (0, 0, 0x10000, 0x10000, b"factory")]))
+        fixture[3] = 0x0F
+        boot_end = len(image_bytes(application=False)) - 32
+        fixture[boot_end:boot_end + 32] = hashlib.sha256(fixture[:boot_end]).digest()
+        self.data = bytes(fixture)
         self.fw = replace(load_catalog()[0], size=len(self.data), sha256=hashlib.sha256(self.data).hexdigest())
         self.events = []
         self.journal = Journal(self.root, self.fw, self.events.append)
+        (self.journal.job / "image.bin").write_bytes(self.data)
 
     def tearDown(self): self.tmp.cleanup()
 
@@ -62,12 +72,78 @@ class WriterTests(unittest.TestCase):
         self.assertFalse(final['runtime_version_confirmed'])
         self.assertEqual(final['status'], 'succeeded')
         backup = self.journal.job / 'flash-backup.bin'
-        self.assertEqual(backup.read_bytes(), b'X' * 8192)
+        self.assertEqual(backup.read_bytes(), b'X' * (1024 * 1024))
         self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
         public = json.loads((self.root / 'status.json').read_text())
         self.assertNotIn('sha256', public['records'][0])
         self.assertNotIn('backup_path', public['records'][0])
         self.assertEqual((self.root / 'status.json').stat().st_mode & 0o777, 0o644)
+        self.assertEqual(public['records'][0]['image_sha256'], self.fw.sha256)
+        self.assertEqual(public['records'][0]['image_size'], self.fw.size)
+
+    def test_transport_close_error_does_not_mask_terminal_success_or_failure(self):
+        for failure in (None, 'backup'):
+            with self.subTest(failure=failure):
+                transport = Transport(self.data, failure)
+                transport.close = MagicMock(side_effect=OSError('test-only close failure'))
+                self.assertEqual(execute(self.fw, self.data, self.journal, transport), int(failure is not None))
+                self.assertEqual(self.events[-1]['status'], 'succeeded' if failure is None else 'failed')
+                self.assertTrue(self.journal.record['audit_degraded'])
+                self.assertEqual(self.journal.record['cleanup_error_type'], 'builtins.OSError')
+
+    def test_stage_tampering_and_wrong_transaction_target_fail_before_serial(self):
+        (self.journal.job / 'image.bin').write_bytes(self.data + b'tampered')
+        result, calls = self.run_transaction()
+        self.assertEqual(result, 1)
+        self.assertEqual(calls, ['close'])
+        (self.journal.job / 'image.bin').write_bytes(self.data)
+        transport = Transport(self.data)
+        self.assertEqual(execute(replace(self.fw, id='wrong-target'), self.data, self.journal, transport), 1)
+        self.assertEqual(transport.calls, ['close'])
+
+    def test_partition_extent_and_declared_capacity_prevent_undersized_flash_write(self):
+        from typix_copilot.core import inspect_local
+        checked = inspect_local(self.journal.job / 'image.bin')
+        self.assertEqual(image_capacity(self.fw, checked), 1024 * 1024)
+        enlarged = {**checked, 'partitions': [{'offset': 0x700000, 'size': 0x200000}]}
+        self.assertEqual(image_capacity(self.fw, enlarged), 0x900000)
+        transport = Transport(self.data)
+        transport.connect = MagicMock(return_value=128 * 1024)
+        self.assertEqual(execute(self.fw, self.data, self.journal, transport), 1)
+        self.assertNotIn('backup', transport.calls)
+        self.assertNotIn('write', transport.calls)
+        self.assertEqual(self.events[-1]['code'], 'flash-size')
+
+    def test_image_metadata_kind_chip_and_offset_are_enforced(self):
+        from typix_copilot.core import inspect_local
+        checked = inspect_local(self.journal.job / 'image.bin')
+        for changes in ({'chip': 'esp32'}, {'board': 'other'}, {'image_kind': 'app-image'}, {'flash_offset': 0x10000}):
+            with self.subTest(changes=changes), self.assertRaises(WriteError):
+                image_capacity(replace(self.fw, **changes), checked)
+        for changes in ({'kind': 'app-image'}, {'chip_id': 1}, {'partitions': []}):
+            with self.subTest(changes=changes), self.assertRaises(WriteError):
+                image_capacity(self.fw, {**checked, **changes})
+
+    def test_rejected_authorization_never_constructs_board_or_uses_default_firmware(self):
+        from typix_copilot import writer
+        sent = []
+        with patch.object(writer.os, 'geteuid', return_value=0), \
+             patch.object(writer.os, 'set_blocking'), \
+             patch.object(writer.os, 'write', side_effect=lambda fd, data: sent.append(json.loads(data))), \
+             patch.object(writer.sys, 'flags', SimpleNamespace(isolated=True)), \
+             patch.object(writer.sys, 'argv', ['writer', 'typixdeck-diy-0.3.0']), \
+             patch.object(writer.sys, 'stdout', SimpleNamespace(fileno=lambda: 1)), \
+             patch.object(writer, 'receive_authorization', side_effect=ValueError('test-only bad signature')), \
+             patch.object(writer, 'Board') as board, patch.object(writer, 'SerialTransport') as serial:
+            result = writer.main()
+        self.assertEqual(result, 1)
+        board.assert_not_called()
+        serial.assert_not_called()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]['firmware_id'], 'typixdeck-diy-0.3.0')
+        self.assertTrue(sent[0]['authorization_rejected'])
+        self.assertNotIn('version', sent[0])
+        self.assertNotIn('image_sha256', sent[0])
 
     def test_no_write_on_prewrite_failures(self):
         for phase in ['enter', 'connect', 'backup']:
@@ -81,7 +157,7 @@ class WriterTests(unittest.TestCase):
         secret = '/dev/SECRET_DEVICE serial=SECRET_ID bytes=SECRET_UART'
         transport = SerialTransport.__new__(SerialTransport)
         transport.enter = MagicMock(return_value='bound-port')
-        transport.connect = MagicMock(return_value=3 * 65536)
+        transport.connect = MagicMock(return_value=1024 * 1024)
         transport.esp = MagicMock()
         transport.esp.read_flash.side_effect = [b'X' * 65536, OSError(secret)]
         transport.journal = self.journal
@@ -220,10 +296,40 @@ class WriterTests(unittest.TestCase):
         self.assertIn('restart', calls)
         self.assertTrue(self.events[-1]['audit_degraded'])
 
-    def test_allowlist_rejects_historical_unknown_and_shell_requests(self):
-        self.assertEqual(approved_firmware('official-20260910').id, 'official-20260910')
-        for identifier in ['official-20260821', '../../etc/passwd', ';reboot', '--port=/dev/ttyACM1']:
+    def test_bundled_signed_catalog_accepts_every_version_and_rejects_unknown_requests(self):
+        for fw in bundled_catalog():
+            self.assertEqual(approved_firmware(fw.id), fw)
+        for identifier in ['not-published', '../../etc/passwd', ';reboot', '--port=/dev/ttyACM1']:
             with self.assertRaises(WriteError): approved_firmware(identifier)
+
+    def test_all_six_signed_artifacts_complete_same_verified_fake_transport(self):
+        repository = Path(__file__).resolve().parents[1]
+        selected = bundled_catalog()
+        self.assertTrue({'official-20260910', 'official-20260821', 'official-20260815',
+                         'official-20260814', 'typixdeck-diy-0.3.0', 'typixdeck-diy-0.2.0'}
+                        <= {firmware.id for firmware in selected})
+        for firmware in selected:
+            with self.subTest(firmware=firmware.id):
+                paths = list((repository / 'firmware').glob('*/*/' + firmware.filename))
+                self.assertEqual(len(paths), 1)
+                data = paths[0].read_bytes()
+                events = []
+                journal = Journal(Path(self.tmp.name) / firmware.id, firmware, events.append)
+                with tempfile.TemporaryFile(mode='w+b') as stream:
+                    stream.write(encode_authorization(firmware))
+                    stream.write(data)
+                    stream.seek(0)
+                    authorized = receive_authorization(stream, firmware.id)
+                    self.assertEqual(authorized, firmware)
+                    received = receive_image(stream, authorized, journal.job / 'image.bin')
+                transport = Transport(received)
+                transport.connect = MagicMock(return_value=16 * 1024 * 1024)
+                self.assertEqual(execute(authorized, received, journal, transport), 0)
+                self.assertEqual(transport.calls, ['enter', 'backup', 'write', 'verify', 'restart', 'close'])
+                final = events[-1]
+                self.assertEqual((final['firmware_id'], final['version'], final['image_sha256'], final['image_size']),
+                                 (firmware.id, firmware.version, firmware.sha256, firmware.size))
+                self.assertTrue(final['verified'] and final['reconnected'])
 
     def test_image_rejected_before_transport_for_bad_size_or_hash(self):
         for content in [b'wrong', self.data + b'extra']:

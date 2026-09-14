@@ -13,7 +13,7 @@
     "official",
     "self-developed",
     "third-party",
-    "local-import"
+    "local-cache"
   ],
   "releaseAvailable": true,
   "productType": "firmware-store-with-flashing",
@@ -27,27 +27,23 @@
     "flash-and-verify"
   ],
   "artifactInputs": [
-    "github-release-assets",
-    "github-repository-files",
-    "local-merged-image",
-    "esp-idf-build-output",
-    "optional-tpfw"
+    "signed-repository-catalog",
+    "verified-cache"
   ],
   "mvpIncludesFirmwareWriting": true,
   "previewAvailable": true,
   "previewVersion": "0.1.0-preview.5",
   "hardwareWritingAvailable": true,
-  "version": "0.1.6-1",
+  "version": "0.2.0-1",
   "architecture": "arm64",
   "compatibleOS": [
     "raspios-trixie"
-  ],
-  "approvedWriteFirmware": [
-    "official-20260910"
   ],
   "hardwareAcceptance": "Actual write and private8MiB backup completed; independent readback interrupted and recovery ROM entry timed out. User confirmed both displays normal after full-device restart; SSH and runtime USB restored. Full write/readback cycle remains unaccepted.",
   "repository": "https://github.com/typixdeck/copilot",
   "firmwareIndex": "https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/index.json",
   "onlineCatalogAvailable": true,
-  "distribution": "typixdeck/store"
+  "distribution": "typixdeck/store",
+  "writeAuthorization": "all-authenticated-catalog-entries",
+  "firmwareSignature": "https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/index.json.sig"
 }

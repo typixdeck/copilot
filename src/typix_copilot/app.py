@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-import threading
 
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
-from .core import Simulation, inspect_local, load_catalog
+from .core import Simulation
+from .authority import bundled_catalog
 
 
 def styled(widget, *classes):
@@ -93,7 +93,7 @@ class ChipArt(Gtk.DrawingArea):
 class CopilotApplication(Gtk.Application):
     def __init__(self, fullscreen=False, tick_ms=500):
         super().__init__(application_id="ai.typixdeck.copilot.preview", flags=Gio.ApplicationFlags.NON_UNIQUE)
-        self.catalog = load_catalog()
+        self.catalog = bundled_catalog()
         self.firmwares = {item.id: item for item in self.catalog}
         self.simulation = Simulation(self.catalog)
         self.want_fullscreen = fullscreen
@@ -104,7 +104,6 @@ class CopilotApplication(Gtk.Application):
         self.task_view = None
         self.navigation_locked = False
         self.operation_return = "detail"
-        self.inspections = []
         self.importing = False
         self.scenario = "success"
         self.page_name = "store"
@@ -137,7 +136,7 @@ class CopilotApplication(Gtk.Application):
         sidebar = add(middle, box(spacing=5, style="sidebar"))
         sidebar.set_size_request(145, -1)
         self.nav = {}
-        for name, title in (("store", "固件商店"), ("library", "我的固件"), ("device", "协处理器"), ("history", "写入记录")):
+        for name, title in (("store", "固件商店"), ("library", "本地固件"), ("device", "协处理器"), ("history", "写入记录")):
             item = button(title, lambda _b, p=name: self.show_page(p), "nav")
             item.get_child().set_xalign(0)
             add(sidebar, item)
@@ -218,30 +217,35 @@ class CopilotApplication(Gtk.Application):
             item.get_style_context().add_class("active") if key == name else item.get_style_context().remove_class("active")
         self.render_results()
 
+    @staticmethod
+    def publisher(fw):
+        return fw.publisher or ("官方" if not fw.download_url else "第三方")
+
     def render_results(self):
         for child in self.results.get_children():
             self.results.remove(child)
         query = self.search_text.strip().casefold()
-        matches = [fw for fw in self.catalog if not query or query in f"官方 TypixDeck {fw.version} {fw.title} {fw.filename}".casefold()]
-        if self.filter_name in ("自研", "第三方"):
-            empty = add(self.results, box(spacing=10, style="card"))
-            add(empty, label(f"暂无{self.filter_name}固件", "title"))
-            add(empty, label("可导入 .bin 进行只读检查。", "muted"))
-        elif not matches:
+        groups = {}
+        for fw in self.catalog:
+            publisher = self.publisher(fw)
+            if self.filter_name != "全部" and publisher != self.filter_name:
+                continue
+            if query and query not in f"{publisher} {fw.title} {fw.version} {fw.filename}".casefold():
+                continue
+            title = fw.title if fw.download_url else "TypixDeck 官方固件"
+            groups.setdefault((publisher, title), []).append(fw)
+        if not groups:
             add(self.results, label("未找到固件", "muted"))
-        else:
-            fw = matches[0]
-            card = add(self.results, box(False, 18, "featured"))
-            add(card, ChipArt())
-            info = add(card, box(spacing=8), True)
-            add(info, label("TypixDeck 官方固件", "title"))
-            add(info, label(f"{fw.version}  ·  {len(matches)} 个版本", "muted"))
-            line = add(info, box(False, 8))
-            add(line, box(), True)
-            self.view_versions = add(line, button("查看版本 →", lambda _b: self.show_detail(fw.id), "primary"))
+        for (publisher, title), versions in groups.items():
+            fw = versions[0]
+            card = add(self.results, box(False, 14, "card"))
+            add(card, ChipArt(65, 72))
+            info = add(card, box(spacing=7), True)
+            add(info, label(title, "subheading", True))
+            add(info, label(f"{publisher} · {fw.version} · {len(versions)} 个版本", "small"))
+            add(card, button("查看 →", lambda _b, key=fw.id: self.show_detail(key), "primary"))
         actions = add(self.results, box(False, 12))
-        add(actions, button("＋ 导入固件", self.choose_import), True)
-        add(actions, button("我的固件 →", lambda _b: self.show_page("library")), True)
+        add(actions, button("本地固件 →", lambda _b: self.show_page("library")), True)
         self.results.show_all()
 
     def show_detail(self, identifier):
@@ -253,13 +257,14 @@ class CopilotApplication(Gtk.Application):
         page = self.make_page("detail")
         head = add(page, box(False, 9))
         add(head, button("←", lambda _b: self.show_page("store"), "flat"))
-        add(head, label("TypixDeck 官方固件", "title"), True)
+        add(head, label(fw.title, "title", True), True)
         add(head, label("适配待验证", "pill"))
         version_row = add(page, box(False, 10))
         add(version_row, label("选择版本", "muted"))
         self.version_combo = Gtk.ComboBoxText()
         for item in self.catalog:
-            self.version_combo.append(item.id, f"{item.version}  ·  {size_text(item.size)}")
+            if self.publisher(item) == self.publisher(fw) and (not fw.download_url or item.title == fw.title):
+                self.version_combo.append(item.id, f"{item.version}  ·  {size_text(item.size)}")
         self.version_combo.set_active_id(fw.id)
         self.version_combo.connect("changed", lambda combo: self.show_detail(combo.get_active_id()) if combo.get_active_id() else None)
         add(version_row, self.version_combo, True)
@@ -286,9 +291,8 @@ class CopilotApplication(Gtk.Application):
         self.content.show_all()
 
     def build_library(self, page):
-        header = add(page, box(False, 10))
-        add(header, label("我的固件", "heading"), True)
-        self.import_button = add(header, button("导入 .bin", self.choose_import, "primary"))
+        add(page, label("本地固件", "heading"))
+        self.cache_write_buttons, self.cache_remove_buttons = {}, {}
         add(page, label(f"预览缓存 · {len(self.simulation.cached)} 个版本", "small"))
         if not self.simulation.cached:
             card = add(page, box(spacing=10, style="card"))
@@ -298,24 +302,23 @@ class CopilotApplication(Gtk.Application):
             if fw.id in self.simulation.cached:
                 row = add(page, box(False, 10, "card"))
                 info = add(row, box(spacing=6), True)
-                add(info, label(f"官方固件  {fw.version}", "subheading"))
+                add(info, label(f"{fw.title} · {fw.version}", "subheading", True))
                 add(info, label(f"预览缓存  ·  {size_text(fw.size)}", "small"))
-                add(row, button("查看 / 写入", lambda _b, key=fw.id: self.show_detail(key)))
-        add(page, label("本地文件 · 只读检查", "small"))
-        if not self.inspections:
-            add(page, label("暂无文件", "muted"))
-        for data in self.inspections:
-            card = add(page, box(spacing=7, style="card"))
-            add(card, label(data["name"], "subheading", True))
-            add(card, label(f"{size_text(data['size'])}  ·  {data['kind']}", "small"))
-            add(card, label("文件已检查 · 适配待验证", "warning"))
-            details = Gtk.Expander(label="检查详情")
-            details_box = box(spacing=7)
-            add(details_box, label(data["sha256"], "mono", True))
-            for warning in data.get("warnings", []):
-                add(details_box, label(str(warning), "small", True))
-            details.add(details_box)
-            add(card, details)
+                self.cache_write_buttons[fw.id] = add(row, button("写入", lambda _b, key=fw.id: self.prepare_cached_write(key), "primary"))
+                self.cache_remove_buttons[fw.id] = add(row, button("移除缓存", lambda _b, key=fw.id: self.remove_cached(key)))
+
+    def prepare_cached_write(self, identifier):
+        if self.navigation_locked or self.importing or self.modal:
+            return
+        self.selected = identifier
+        self.confirm_write()
+
+    def remove_cached(self, identifier):
+        if self.navigation_locked or self.importing or self.modal:
+            return
+        self.simulation.cached.discard(identifier)
+        self.show_page("library")
+        self.message("预览缓存已移除")
 
     def build_device(self, page):
         add(page, label("板载协处理器", "heading"))
@@ -385,12 +388,12 @@ class CopilotApplication(Gtk.Application):
         self.task_view = "confirm"
         fw = self.firmwares[self.selected]
         page = self.make_page("confirmation")
-        add(page, label("真实写入尚未就绪", "heading"))
+        add(page, label("预览写入流程", "heading"))
         card = add(page, box(spacing=16, style="card"))
         row = add(card, box(False, 16))
         add(row, ChipArt(96, 100))
         info = add(row, box(spacing=10), True)
-        add(info, label(f"官方固件 · {fw.version}", "title"))
+        add(info, label(f"{fw.title} · {fw.version}", "title", True))
         add(info, label("TypixDeck · 板载 ESP32-S3", "muted"))
         add(info, label("此版本仅演示流程，不会写入芯片", "warning", True))
         add(card, label("写入过程中请勿切换、拔线或断电", "warning", True))
@@ -421,7 +424,7 @@ class CopilotApplication(Gtk.Application):
         row = add(card, box(False, 18))
         add(row, ChipArt(100, 110))
         info = add(row, box(spacing=10), True)
-        add(info, label(f"官方固件 · {fw.version}", "title"))
+        add(info, label(f"{fw.title} · {fw.version}", "title", True))
         add(info, label("TypixDeck · 板载 ESP32-S3", "muted"))
         self.progress = add(card, Gtk.ProgressBar())
         self.progress.set_show_text(True)
@@ -486,61 +489,6 @@ class CopilotApplication(Gtk.Application):
             return
         self.show_page(self.operation_return)
 
-    def choose_import(self, *_args):
-        if self.modal or self.importing or self.navigation_locked:
-            return
-        dialog = Gtk.FileChooserDialog(title="导入 ESP32-S3 固件 · 只读检查", transient_for=self.window, action=Gtk.FileChooserAction.OPEN)
-        dialog.set_modal(True)
-        dialog.add_buttons("取消", Gtk.ResponseType.CANCEL, "检查文件", Gtk.ResponseType.OK)
-        file_filter = Gtk.FileFilter()
-        file_filter.set_name("ESP32-S3 固件 (*.bin)")
-        file_filter.add_pattern("*.bin")
-        dialog.add_filter(file_filter)
-        self.modal = dialog
-        dialog.connect("destroy", lambda *_: setattr(self, "modal", None) if self.modal is dialog else None)
-
-        def response(_dialog, result):
-            path = dialog.get_filename() if result == Gtk.ResponseType.OK else None
-            dialog.destroy()
-            self.modal = None
-            if path:
-                self.import_path(Path(path))
-        dialog.connect("response", response)
-        dialog.show_all()
-        dialog.present()
-
-    def import_path(self, path):
-        if self.importing or self.modal or self.navigation_locked:
-            return
-        self.importing = True
-        self.message("正在只读检查本地文件…")
-
-        def done(data, error):
-            self.importing = False
-            if data:
-                self.inspections = [item for item in self.inspections if item["sha256"] != data["sha256"]]
-                self.inspections.insert(0, data)
-                self.message("本地文件检查完成；尚未确认板级适配。")
-                self.show_page("library")
-            else:
-                self.message("导入失败：" + error)
-                dialog, content = self.new_dialog("文件未能导入")
-                add(content, label("文件未能导入", "title"))
-                add(content, label(error, "muted", True))
-                dialog.add_button("返回", Gtk.ResponseType.CLOSE)
-                dialog.connect("response", lambda *_: dialog.destroy())
-                dialog.show_all()
-                dialog.present()
-            return GLib.SOURCE_REMOVE
-
-        def worker():
-            try:
-                data, error = inspect_local(path), None
-            except (ValueError, OSError) as exc:
-                data, error = None, str(exc)
-            GLib.idle_add(done, data, error)
-        threading.Thread(target=worker, daemon=True, name="copilot-file-inspection").start()
-
     def reset_demo(self, *_args):
         if self.modal or self.importing or self.navigation_locked:
             return
@@ -549,7 +497,7 @@ class CopilotApplication(Gtk.Application):
         self.scenario = "success"
         self.side_state.set_text("○ 演示设备")
         self.show_page("device")
-        self.message("预览已重置，本地检查结果保留。")
+        self.message("预览已重置。")
 
     def close_window(self, *_args):
         if self.navigation_locked:

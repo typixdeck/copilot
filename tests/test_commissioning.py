@@ -1,5 +1,6 @@
 """One-use first-upgrade authorization tests; no real serial or privilege."""
 from contextlib import contextmanager
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,16 @@ class CommissioningTests(unittest.TestCase):
         self.assertFalse(audit['active'])
         self.assertEqual(audit['consumed_by'],self.journal.identifier)
         self.assertEqual((self.journal.job/'commissioning.json').stat().st_mode & 0o777,0o600)
+
+    def test_permit_binds_transaction_firmware_without_relooking_up_latest_catalog(self):
+        self.fw = replace(self.fw, id='third-party-future', version='2.0', sha256='c' * 64)
+        self.journal = writer.Journal(self.root / 'future-state', self.fw, self.events.append)
+        self.permit()
+        with self.authorized_fixture(), patch.object(writer, 'approved_firmware', side_effect=AssertionError('no latest lookup')):
+            writer.commissioning_permit(self.journal, self.board)
+            self.permit(sha256='d' * 64)
+            with self.assertRaises(writer.WriteError):
+                writer.commissioning_permit(self.journal, self.board)
 
     def test_missing_expired_wrong_uid_profile_image_size_nonce_rejected(self):
         with self.authorized_fixture():

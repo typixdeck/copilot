@@ -13,7 +13,7 @@
       "zh-CN": "TypixDeck 板载 ESP32-S3 固件商店"
     },
     "description": {
-      "zh-CN": "原生 GTK3 固件管理应用，在线读取官方与 DIY 固件目录，按来源和版本浏览，下载后校验 SHA-256 并支持离线缓存。包含完整客户端与系统授权写入组件；DIY 当前提供下载和检查，真实刷写链路仍待 CM4 验收。"
+      "zh-CN": "原生 GTK3 板载 ESP32-S3 固件商店。所有签名目录版本统一写入，自动复用缓存或下载校验；本地固件管理缓存版本。完整客户端与 Polkit 写入组件保留板级检查、私有备份及独立回读校验，完整刷写链路仍待 CM4 验收。"
     },
     "categories": [
       "System"
@@ -44,7 +44,11 @@
       "/usr/lib/python3/dist-packages/typix_copilot/live_app.py",
       "/usr/lib/python3/dist-packages/typix_copilot/registry.py",
       "/usr/lib/python3/dist-packages/typix_copilot/style.css",
-      "/usr/lib/python3/dist-packages/typix_copilot/writer.py"
+      "/usr/lib/python3/dist-packages/typix_copilot/writer.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/authority.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/firmware-index.json",
+      "/usr/lib/python3/dist-packages/typix_copilot/firmware-index.json.sig",
+      "/usr/lib/python3/dist-packages/typix_copilot/firmware-public-key.pem"
     ],
     "compatibility": {
       "arch": [
@@ -60,18 +64,22 @@
     }
   },
   "release": {
-    "version": "0.1.6-1",
-    "file": "dist/typix-copilot_0.1.6-1_arm64.deb",
-    "sha256": "1787e7c561ce72533d3c30042fe561202253e2da04be00c7a6ebbb1aad35851a"
+    "version": "0.2.0-1",
+    "file": "dist/typix-copilot_0.2.0-1_arm64.deb",
+    "sha256": "2f6e63d687a4e6f2ed6bf2d520dd2f013b5363f714bbe1957f8412a70fbd465f"
   },
   "screenshots": [
     {
       "path": "docs/screenshots/catalog-store.png",
-      "caption": "Copilot 在线目录布局（本机 GTK3 渲染，0.1.4）"
+      "caption": "Copilot 0.2.0 固件目录（本机 GTK，测试控制器）"
     },
     {
       "path": "docs/screenshots/catalog-diy.png",
-      "caption": "DIY 固件详情（本机 GTK3 渲染，0.1.4）"
+      "caption": "DIY 统一写入（本机 GTK，未刷写）"
+    },
+    {
+      "path": "docs/screenshots/local-firmware.png",
+      "caption": "本地固件缓存管理（测试缓存）"
     }
   ]
 }

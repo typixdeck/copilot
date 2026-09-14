@@ -15,6 +15,6 @@
 ced53b5e9efd7b77a1061e20bf03d573edac53d2db235bc70d78212e8797f184
 ```
 
-源码基于 [TypixNode 官方工程](https://github.com/TypixNode/TypixDeck-esp32s3-firmware/tree/fde9dac3b687a92fa2a6a049b5cd953dcb367b23)，应用改造来自本地 `diy-esp32s3-firmware` 工作副本。该候选尚无对应的改造源码提交，因此索引 `commit` 留空；上游提交不代表此产物的可重复构建证明。发布于此处供 Copilot 发现、下载和检查，不代表已获得板级写入批准。
+源码基于 [TypixNode 官方工程](https://github.com/TypixNode/TypixDeck-esp32s3-firmware/tree/fde9dac3b687a92fa2a6a049b5cd953dcb367b23)，应用改造来自本地 `diy-esp32s3-firmware` 工作副本。该候选尚无对应的改造源码提交，因此索引 `commit` 留空；上游提交不代表此产物的可重复构建证明。Copilot 0.2.0 验证签名目录后可直接发起写入，自动下载或复用缓存；这不代表已完成真机验收。
 
 上游工程 MIT、ESP-IDF Apache 2.0、TinyUSB MIT、FreeType FTL 与 Special Elite Apache 2.0 声明保留在 [licenses/](licenses/)。本软件部分基于 FreeType 团队的工作。字体资源包含上游提供的阿里巴巴普惠体子集，使用和分发须遵守其字体许可；这些第三方资源不因本目录发布而改为项目许可。
