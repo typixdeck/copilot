@@ -22,6 +22,7 @@ import unicodedata
 from .authority import authorize_firmware, encode_authorization
 from .cache import ArtifactCache, CacheError, Cancelled
 from .core import Firmware, MAX_IMAGE_BYTES
+from .diagnostics import sanitize_diagnostics
 
 
 HELPER = "/usr/libexec/typix-copilot-write"
@@ -113,6 +114,7 @@ def sanitize_event(raw, firmware=None):
         raise LiveError("protocol_error")
     event = {key: raw[key] for key in ("phase", "status", "firmware_id", "version", "progress")}
     event.update(identity)
+    event.update(sanitize_diagnostics(raw))
     event.update({name: raw.get(name, False) for name in FLAGS})
     # Legacy firmware provides no verified running-version handshake.
     event["runtime_version_confirmed"] = False
@@ -161,7 +163,7 @@ def read_status(path=STATUS_PATH, *, trusted_uid=0):
             raise LiveError("status_unavailable")
         records = [sanitize_event(row) for row in payload["records"]]
         return records, (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
-    except (OSError, ValueError, LiveError):
+    except (OSError, ValueError, TypeError, RecursionError, LiveError):
         raise LiveError("status_unavailable") from None
 
 

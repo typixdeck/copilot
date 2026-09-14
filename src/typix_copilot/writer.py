@@ -23,6 +23,7 @@ import uuid
 from .authority import bundled_catalog, receive_authorization
 from .core import inspect_local
 from .device import Board, DeviceError, load_profile
+from .diagnostics import MAX_LOG_EVENTS, MAX_LOG_BYTES, MAX_ELAPSED_MS, log_event
 
 STATE_ROOT = Path('/var/lib/typix-copilot')
 VENDOR_ROOT = Path('/usr/lib/typix-copilot/vendor')
@@ -83,7 +84,24 @@ def exception_diagnostics(exc):
             frames.append({'module': module, 'function': function, 'line': traceback.tb_lineno})
             frames = frames[-8:]
         traceback = traceback.tb_next
-    return {'error_type': name if name in _ERROR_TYPES else 'unknown', 'error_frames': frames}
+    result = {'error_type': name if name in _ERROR_TYPES else 'unknown', 'error_frames': frames}
+    # Classify only known tool exceptions; never serialize raw messages, bytes,
+    # paths or arbitrary user-defined __str__ implementations.
+    if name in {'esptool.util.FatalError', 'serial.serialutil.SerialException',
+                'serial.serialutil.SerialTimeoutException'}:
+        args = exc.args
+        message = args[0].lower() if args and type(args[0]) is str and len(args[0]) <= 4096 else ''
+        for marker, category in [('serial data stream stopped', 'stream-stopped'),
+            ('no serial data received', 'stream-stopped'), ('packet content transfer stopped', 'packet-stopped'),
+            ('invalid head', 'slip-framing'), ('invalid slip escape', 'slip-escape'),
+            ('corrupt data', 'corrupt-frame'), ('expected digest', 'digest-frame'),
+            ('digest mismatch', 'digest-mismatch'), ('timed out', 'timeout'), ('timeout', 'timeout')]:
+            if marker in message:
+                result['error_category'] = category
+                break
+    if isinstance(exc, OSError) and type(exc.errno) is int and 0 <= exc.errno <= 4096:
+        result['error_errno'] = exc.errno
+    return result
 
 
 def private_write(path, data, mode=0o600):
@@ -179,6 +197,7 @@ class Journal:
         self.job = root / 'private' / self.identifier
         ensure_directory(root, 0o755)
         ensure_directory(root / 'private', 0o700)
+        ensure_directory(root / 'logs', 0o755)
         ensure_directory(self.job, 0o700)
         self.previous = []
         try:
@@ -190,21 +209,54 @@ class Journal:
                            status='running', phase='prepare', progress=0.0,
                            backup_complete=False, write_started=False, verified=False,
                            reconnected=False, runtime_version_confirmed=False,
-                           boot_requested=False, timestamp=int(time.time()))
+                           boot_requested=False, timestamp=int(time.time()),
+                           started_at=int(time.time()), elapsed_ms=0)
+        self.started = time.monotonic()
+        self.timeline = []
+        self.log_truncated = False
+        self.last_log_key = None
         self.last_save = 0
         self.last_phase = None
         self.last_sent = None
         self.hardware_started = False
 
     def emit(self, phase, progress, *, durable=False, **fields):
+        if phase != self.record['phase']:
+            for key in ('attempted_offset', 'last_checked_bytes', 'read_bytes', 'read_total_bytes',
+                        'chunk_received_bytes', 'chunk_requested_bytes', 'last_packet_elapsed_ms'):
+                if key not in fields:
+                    self.record.pop(key, None)
         self.record.update(phase=phase, progress=max(0., min(1., progress)), **fields)
         now = time.monotonic()
+        self.record['elapsed_ms'] = max(0, min(MAX_ELAPSED_MS, int((now - self.started) * 1000)))
+        self.record['timestamp'] = int(time.time())
+        event = log_event(self.record)
+        log_key = (phase, int(self.record['progress'] * 100), self.record['status'],
+                   self.record['backup_complete'], self.record['write_started'], self.record['verified'],
+                   self.record['reconnected'], self.record.get('error_type'), self.record.get('cleanup_error_type'))
+        if log_key != self.last_log_key:
+            if len(self.timeline) >= MAX_LOG_EVENTS:
+                del self.timeline[1]
+                self.log_truncated = True
+            self.timeline.append(event)
+            self.last_log_key = log_key
         if durable or phase != self.last_phase or now - self.last_save >= 2 or self.record['status'] != 'running':
             encoded = json.dumps(self.record, sort_keys=True).encode()
             try:
                 private_write(self.job / 'result.json', encoded)
                 public = json.dumps({'schema': 1, 'records': [self.record, *self.previous]}).encode()
                 private_write(self.root / 'status.json', public, 0o644)
+                detail = {'schema': 1, 'identity': {key: self.record[key] for key in
+                          ('job_id', 'firmware_id', 'version', 'image_sha256', 'image_size')},
+                          'events': self.timeline, 'truncated': self.log_truncated}
+                log_bytes = json.dumps(detail, sort_keys=True).encode()
+                while len(log_bytes) > MAX_LOG_BYTES and len(self.timeline) > 2:
+                    del self.timeline[1]
+                    self.log_truncated = detail['truncated'] = True
+                    log_bytes = json.dumps(detail, sort_keys=True).encode()
+                private_write(self.root / 'logs' / (self.identifier + '.json'), log_bytes, 0o644)
+                if self.record['status'] != 'running':
+                    self._prune_logs()
                 self.last_save, self.last_phase = now, phase
             except OSError:
                 if not self.hardware_started:
@@ -212,6 +264,16 @@ class Journal:
                 # Failure of progress logging after the durable start checkpoint
                 # must not interrupt flash writes or readback/reset recovery.
                 self.record['audit_degraded'] = True
+                # A separate detail-file failure may leave space for the compact
+                # status. Best effort once per file; never retry the serial transaction.
+                for target, payload, mode in (
+                    (self.job / 'result.json', self.record, 0o600),
+                    (self.root / 'status.json', {'schema': 1, 'records': [self.record, *self.previous]}, 0o644),
+                ):
+                    try:
+                        private_write(target, json.dumps(payload, sort_keys=True).encode(), mode)
+                    except OSError:
+                        pass
         key = (phase, int(self.record['progress'] * 100), self.record['status'])
         if key != self.last_sent:
             self.last_sent = key
@@ -220,6 +282,15 @@ class Journal:
             except (BrokenPipeError, OSError):
                 # A lost GUI must not interrupt a write. Status is durable on the device.
                 pass
+
+    def _prune_logs(self):
+        import re
+        retained = {row.get('job_id') for row in [self.record, *self.previous]}
+        for path in (self.root / 'logs').iterdir():
+            if re.fullmatch(r'[0-9a-f]{32}\.json', path.name) and path.stem not in retained:
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1:
+                    path.unlink()
 
 
 def port_in_use(endpoint, proc=Path('/proc')):
@@ -510,14 +581,25 @@ class SerialTransport:
         for offset in range(0, size, 64 * 1024):
             amount = min(64 * 1024, size - offset)
             # Wait for the whole checked read, including its final digest,
-            # before journal I/O. No callback runs inside the stub ACK stream.
+            # before journal I/O. The packet callback below updates memory only.
             self.attempted_offset = offset
-            block = self.esp.read_flash(offset, amount)
+            self.chunk_received_bytes = 0
+            self.chunk_requested_bytes = amount
+            self.last_packet_time = time.monotonic()
+            def packet_progress(received, length, read_offset):
+                # Called after packet ACK: memory assignments only. Logging,
+                # hashing and callbacks to the GUI happen outside this stream.
+                if (type(received) is int and 0 <= received <= amount
+                        and length == amount and read_offset == offset):
+                    self.chunk_received_bytes = received
+                    self.last_packet_time = time.monotonic()
+            block = self.esp.read_flash(offset, amount, progress_fn=packet_progress)
             if len(block) != amount:
                 raise WriteError('readback-length')
             self.last_checked_bytes = offset + amount
             data.extend(block)
-            self.journal.emit(phase, low + width * len(data) / size)
+            self.journal.emit(phase, low + width * len(data) / size, read_bytes=len(data),
+                              read_total_bytes=size, attempted_offset=offset, last_checked_bytes=len(data))
         if len(data) != size:
             raise WriteError('readback-length')
         return bytes(data)
@@ -567,7 +649,7 @@ def execute(firmware, data, journal, transport):
         if type(capacity) is not int or capacity < required:
             raise WriteError('flash-size')
         require_space(journal.job, capacity + len(data))
-        journal.emit('backup', .18)
+        journal.emit('backup', .18, flash_capacity=capacity, read_bytes=0, read_total_bytes=capacity)
         backup = transport.read(capacity, 'backup')
         if len(backup) != capacity:
             raise WriteError('backup-incomplete')
@@ -596,10 +678,16 @@ def execute(firmware, data, journal, transport):
         failed_phase = journal.record['phase']
         diagnostics = exception_diagnostics(exc)
         if failed_phase in {'backup', 'verify'} and getattr(transport, 'stage', None) == failed_phase:
-            for field in ('attempted_offset', 'last_checked_bytes'):
+            for field in ('attempted_offset', 'last_checked_bytes', 'chunk_received_bytes', 'chunk_requested_bytes'):
                 value = getattr(transport, field, None)
                 if type(value) is int and 0 <= value <= 16 * 1024 * 1024:
                     diagnostics[field] = value
+            if hasattr(transport, 'last_packet_time'):
+                diagnostics['last_packet_elapsed_ms'] = max(0, min(MAX_ELAPSED_MS,
+                    int((time.monotonic() - transport.last_packet_time) * 1000)))
+            diagnostics['awaiting_digest'] = (getattr(transport, 'chunk_requested_bytes', 0) > 0
+                and getattr(transport, 'chunk_received_bytes', -1) == transport.chunk_requested_bytes
+                and diagnostics.get('error_category') not in {'digest-mismatch', 'digest-frame'})
         journal.emit('failed', journal.record['progress'], status='failed', code=code,
                      failed_phase=failed_phase, **diagnostics)
         return 1

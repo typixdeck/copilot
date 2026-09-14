@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
 import threading
 
 from .app import CopilotApplication, ChipArt, Gdk, Gio, GLib, Gtk, Pango, add, box, button, label, size_text, styled
@@ -10,10 +11,11 @@ from .authority import bundled_catalog
 from .registry import FirmwareRegistry, merge_catalog
 from . import __version__
 from .live import LiveController, LiveError, event_message
+from .diagnostics import DiagnosticError, format_record_log, read_job_log
 
 
 class LiveCopilotApplication(CopilotApplication):
-    def __init__(self, fullscreen=False, *, cache=None, controller=None, registry=None):
+    def __init__(self, fullscreen=False, *, cache=None, controller=None, registry=None, log_reader=None):
         # Reuse layout/search widgets, without calling the preview initializer.
         Gtk.Application.__init__(self, application_id="ai.typixdeck.copilot", flags=Gio.ApplicationFlags.FLAGS_NONE)
         self._bundled_catalog = bundled_catalog()
@@ -32,6 +34,7 @@ class LiveCopilotApplication(CopilotApplication):
         self.firmwares = {fw.id: fw for fw in self.catalog}
         self.cache = cache or ArtifactCache(Path.home() / ".cache/typix-copilot/artifacts")
         self.controller = controller or LiveController(self.cache)
+        self.log_reader = read_job_log if log_reader is None else log_reader
         self.want_fullscreen = fullscreen
         self.window = self.modal = self.timer = self.task_view = None
         self.navigation_locked = self.importing = False
@@ -311,20 +314,112 @@ class LiveCopilotApplication(CopilotApplication):
         add(page, button("刷新", lambda *_: self.show_page("device")))
 
     def build_history(self, page):
-        add(page, label("写入记录", "heading"))
+        heading = add(page, box(False, 12))
+        add(heading, label("写入记录", "heading"), True)
+        add(heading, button("刷新", lambda *_: self.show_page("history")))
         try:
             records = self.controller.records()
         except LiveError:
             add(page, label("维护记录无法读取", "warning"))
             records = []
-        if not records and not self.local_results:
-            add(page, label("暂无写入记录", "muted"))
+        combined, seen = [], set()
         for record in records + self.local_results:
+            key = self._history_key(record)
+            if key not in seen:
+                seen.add(key)
+                combined.append(record)
+        self.history_rows = []
+        if not combined:
+            add(page, label("暂无写入记录", "muted"))
+        for record in combined:
             card = add(page, box(spacing=7, style="card"))
-            add(card, label(record["version"], "subheading"))
+            candidates = [*self.catalog, *self.local_firmwares]
+            if self.operation_firmware:
+                candidates.append(self.operation_firmware)
+            firmware = next((fw for fw in candidates if
+                            (fw.id, fw.version, fw.sha256, fw.size) == tuple(record.get(key) for key in
+                             ("firmware_id", "version", "image_sha256", "image_size"))), None)
+            title = add(card, label(
+                f"{firmware.title} · {firmware.version}" if firmware else f"固件 · {record['version']}",
+                "subheading", True))
+            status = {"running": "进行中", "failed": "未完成", "succeeded": "已完成"}[record["status"]]
+            add(card, label(f"{self._history_date(record)} · {status}", "small"))
             add(card, label(event_message(record), "small", True))
             if record["status"] == "succeeded":
                 add(card, label("运行版本待确认", "small"))
+            expander = add(card, Gtk.Expander(label="详细日志"))
+            expander.set_can_focus(True)
+            detail = box(spacing=8)
+            expander.add(detail)
+            actions = add(detail, box(False, 12))
+            add(actions, label("仅保存在本机", "small"), True)
+            copy = add(actions, Gtk.Button(label="复制日志"))
+            scroll = add(detail, Gtk.ScrolledWindow())
+            scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scroll.set_size_request(-1, 240)
+            view = Gtk.TextView()
+            view.set_editable(False)
+            view.set_cursor_visible(True)
+            view.set_monospace(True)
+            view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            view.set_left_margin(10)
+            view.set_right_margin(10)
+            view.set_top_margin(10)
+            view.set_bottom_margin(10)
+            scroll.add(view)
+            row = dict(record=dict(record), title=title, expander=expander, view=view, copy=copy, text=None)
+            self.history_rows.append(row)
+            copy.connect("clicked", lambda _button, item=row: self._copy_history_log(item))
+            expander.connect("notify::expanded", lambda widget, _property, item=row:
+                             self._load_history_log(item) if widget.get_expanded() else None)
+
+    @staticmethod
+    def _history_key(record):
+        identity = tuple(record.get(key) for key in ("firmware_id", "version", "image_sha256", "image_size"))
+        # A root task and its last live event are one attempt. Different images
+        # or versions never inherit one another's title or diagnostic details.
+        if record.get("job_id"):
+            return (record["job_id"], *identity)
+        return (None, *identity, record.get("timestamp"), record.get("phase"),
+                record.get("status"), record.get("code"))
+
+    @staticmethod
+    def _history_date(record):
+        timestamp = record.get("timestamp")
+        if type(timestamp) is int:
+            try:
+                return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, OverflowError, OSError):
+                pass
+        return "时间未记录"
+
+    def _load_history_log(self, row):
+        if row["text"] is not None:
+            return
+        try:
+            details = self.log_reader(row["record"])
+        except DiagnosticError:
+            text = "详细日志暂不可读取；以下为已保存的任务摘要。\n\n" + format_record_log(row["record"])
+        else:
+            text = format_record_log(row["record"], details)
+        row["text"] = text
+        row["view"].get_buffer().set_text(text)
+
+    def _copy_history_log(self, row):
+        self._load_history_log(row)
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(row["text"], -1)
+        self.message("日志已复制")
+
+    def show_result_log(self, *_args):
+        if self.navigation_locked:
+            return
+        key = self._history_key(self.last_result) if self.last_result else None
+        self.show_page("history")
+        for row in self.history_rows:
+            if self._history_key(row["record"]) == key:
+                row["expander"].set_expanded(True)
+                row["expander"].grab_focus()
+                break
 
     def confirm_write(self, *_args):
         if self.navigation_locked or self.modal or self.importing:
@@ -364,7 +459,11 @@ class LiveCopilotApplication(CopilotApplication):
         self.progress.set_show_text(True)
         self.operation_status = add(card, label("准备并校验固件", "subheading", True))
         self.operation_warning = add(card, label("授权开始后无法取消；请勿切换、拔线或断电", "warning", True))
-        self.operation_button = add(page, button("取消", self.operation_response))
+        actions = add(page, box(False, 12))
+        self.operation_button = add(actions, button("取消", self.operation_response), True)
+        self.operation_log_button = add(actions, button("查看日志", self.show_result_log), True)
+        self.operation_log_button.set_no_show_all(True)
+        self.operation_log_button.hide()
         self.message(self.operation_status.get_text())
         self.content.show_all()
 
@@ -440,11 +539,13 @@ class LiveCopilotApplication(CopilotApplication):
             recovery_text if result.get("write_started") else "未开始写入；请检查原因后重新确认"))
         if result.get('exception_used'):
             self.operation_warning.set_text(self.operation_warning.get_text() + " · 本次供电寄存器未验证")
-        if not result.get("job_id"):
-            self.local_results.insert(0, dict(result))
-            self.local_results = self.local_results[:20]
+        key = self._history_key(result)
+        self.local_results = [dict(result)] + [row for row in self.local_results
+                                               if self._history_key(row) != key][:19]
         self.operation_button.set_sensitive(True)
         self.operation_button.set_label("返回固件")
+        self.operation_log_button.set_no_show_all(False)
+        self.operation_log_button.show()
         self.message(self.operation_title.get_text())
         return GLib.SOURCE_REMOVE
 

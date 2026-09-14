@@ -22,6 +22,7 @@ from typix_copilot.authority import bundled_catalog
 DEFAULT_FIRMWARE_ID = "official-20260910"
 from typix_copilot.registry import RegistryError, parse_catalog
 from typix_copilot.cache import CacheError
+from typix_copilot.diagnostics import DiagnosticError, format_record_log
 
 
 def public_catalog():
@@ -72,9 +73,10 @@ class FakeController:
         self.firmware = None
         self.job_id = None
         self.observed_record = None
+        self.history_records = []
 
     def records(self):
-        return []
+        return list(self.history_records)
 
     def pending_record(self):
         return None
@@ -130,7 +132,10 @@ class LiveWindowTests(unittest.TestCase):
         self.app.stop_timer()
         self.app.set_navigation_locked(False)
         self.app.last_result = None
+        self.app.local_results = []
+        self.app.log_reader = Mock(return_value=None)
         self.controller.can_cancel = True
+        self.controller.history_records = []
         self.app.registry = False
         self.app._pending_catalog = None
         self.app._apply_catalog([])
@@ -528,6 +533,125 @@ class LiveWindowTests(unittest.TestCase):
         self.assertEqual(self.app.operation_title.get_text(), "写入未完成")
         self.app.render_operation(self.controller.event("complete", "succeeded", verified=True, reconnected=True, audit_degraded=True))
         self.assertIn("维护记录保存不完整", self.app.operation_status.get_text())
+
+    def history_record(self, **fields):
+        self.controller.firmware = diy_firmware()
+        return self.controller.event("failed", "failed", timestamp=1789393200,
+                                     failed_phase="backup", code="transport-failed",
+                                     attempted_offset=0xE0000, last_checked_bytes=0xE0000, **fields)
+
+    def test_history_legacy_backup_failure_has_expandable_safe_summary(self):
+        record = self.history_record()
+        self.controller.history_records = [record]
+        self.app.show_page("history")
+        self.assertEqual(len(self.app.history_rows), 1)
+        row = self.app.history_rows[0]
+        self.assertEqual(row["title"].get_text(), "TypixDeck DIY · 0.3.0")
+        self.assertFalse(row["expander"].get_expanded())
+        self.assertTrue(row["expander"].get_can_focus())
+        self.app.log_reader.assert_not_called()
+        row["expander"].grab_focus()
+        row["expander"].emit("activate")  # GTK keyboard activation signal.
+        drain()
+        self.assertTrue(row["expander"].get_expanded())
+        self.app.log_reader.assert_called_once_with(record)
+        self.assertEqual(row["text"], format_record_log(record))
+        self.assertIn("0x000E0000", row["text"])
+        self.assertIn("实际写入：未开始", row["text"])
+        self.assertFalse(row["view"].get_editable())
+        self.assertTrue(row["view"].get_monospace())
+        self.assertIsNone(self.app.modal)
+
+    def test_history_detailed_log_is_selectable_and_copies_exact_visible_text(self):
+        record = self.history_record()
+        details = {"schema": 1, "identity": {key: record[key] for key in
+                    ("job_id", "firmware_id", "version", "image_sha256", "image_size")},
+                   "events": [dict(phase="enter", status="running", progress=.12, elapsed_ms=0),
+                              dict(phase="connect", status="running", progress=.18, elapsed_ms=2000),
+                              dict(phase="backup", status="running", progress=.3, elapsed_ms=4000,
+                                   read_bytes=0xE0000, read_total_bytes=8*1024*1024),
+                              dict(phase="failed", status="failed", progress=.3, elapsed_ms=8000,
+                                   code="transport-failed", failed_phase="backup")], "truncated": False}
+        rendered = format_record_log(record, details)
+        self.controller.history_records = [record]
+        self.app.log_reader.return_value = details
+        self.app.show_page("history")
+        row = self.app.history_rows[0]
+        row["expander"].set_expanded(True)
+        buffer = row["view"].get_buffer()
+        self.assertEqual(buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False), rendered)
+        self.assertIn("进入维护模式", row["text"])
+        self.assertIn("连接与芯片检查", row["text"])
+        self.assertIn("917,504/8,388,608", row["text"])
+        self.assertIn("8.00s", row["text"])
+        buffer.select_range(buffer.get_start_iter(), buffer.get_end_iter())
+        self.assertTrue(buffer.get_has_selection())
+        self.assertTrue(row["copy"].get_can_focus())
+        row["copy"].emit("clicked")
+        drain()
+        self.assertEqual(Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text(), rendered)
+        self.assertEqual(self.app.notice.get_text(), "日志已复制")
+        row["expander"].set_expanded(False)
+        row["expander"].set_expanded(True)
+        self.app.log_reader.assert_called_once_with(record)
+        self.assertEqual([w for w in Gtk.Window.list_toplevels() if w.get_visible()], [self.app.window])
+
+    def test_history_log_reader_error_does_not_display_exception_or_change_task(self):
+        record = self.history_record()
+        self.controller.history_records = [record]
+        self.app.log_reader.side_effect = DiagnosticError("/private/path SECRET unsafe diagnostic")
+        self.app.show_page("history")
+        row = self.app.history_rows[0]
+        with patch.object(self.controller, "run_write", side_effect=AssertionError("Logs must be read-only")) as writer:
+            row["expander"].set_expanded(True)
+            row["copy"].emit("clicked")
+            writer.assert_not_called()
+        self.assertIn("详细日志暂不可读取", row["text"])
+        self.assertNotIn("SECRET", row["text"])
+        self.assertNotIn("/private/path", row["text"])
+        self.assertFalse(self.app.navigation_locked)
+
+    def test_history_deduplicates_root_and_local_without_mixing_same_id_versions(self):
+        latest = self.history_record()
+        older = {**latest, "version": "0.1.0", "image_sha256": "e" * 64, "job_id": "b" * 32}
+        another_attempt = {**latest, "job_id": "c" * 32}
+        self.controller.history_records = [latest, older, another_attempt]
+        self.app.local_results = [dict(latest), dict(older)]
+        self.app.show_page("history")
+        self.assertEqual(len(self.app.history_rows), 3)
+        self.assertEqual(self.app.history_rows[0]["title"].get_text(), "TypixDeck DIY · 0.3.0")
+        self.assertEqual(self.app.history_rows[1]["title"].get_text(), "固件 · 0.1.0")
+        for row in self.app.history_rows:
+            row["expander"].set_expanded(True)
+            self.app.log_reader.assert_called_with(row["record"])
+        self.assertIn("0.1.0", self.app.history_rows[1]["text"])
+        self.assertNotIn(" · 0.3.0", self.app.history_rows[1]["text"])
+
+    def test_terminal_view_log_opens_matching_record_without_new_window_or_write(self):
+        self.app.show_detail(diy_firmware().id)
+        self.start()
+        self.assertFalse(self.app.operation_log_button.get_visible())
+        record = self.history_record()
+        self.app.render_operation(record)
+        self.assertTrue(self.app.operation_log_button.get_visible())
+        self.assertEqual(self.app.local_results, [record])
+        with patch.object(self.controller, "run_write", side_effect=AssertionError("Logs must be read-only")) as writer:
+            self.app.operation_log_button.emit("clicked")
+            writer.assert_not_called()
+        self.assertEqual(self.app.page_name, "history")
+        self.assertEqual(len(self.app.history_rows), 1)
+        self.assertTrue(self.app.history_rows[0]["expander"].get_expanded())
+        self.assertEqual(self.app.history_rows[0]["record"], record)
+        self.assertEqual([w for w in Gtk.Window.list_toplevels() if w.get_visible()], [self.app.window])
+
+    def test_history_unreadable_status_keeps_local_results_and_invalid_time_is_bounded(self):
+        record = self.history_record()
+        record["timestamp"] = 2**63 - 1
+        self.app.local_results = [record]
+        with patch.object(self.controller, "records", side_effect=LiveError("status_unavailable")):
+            self.app.show_page("history")
+        self.assertEqual(len(self.app.history_rows), 1)
+        self.assertEqual(self.app._history_date(record), "时间未记录")
 
 
 if __name__ == "__main__":

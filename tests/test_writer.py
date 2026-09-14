@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock, call, ANY
 from types import SimpleNamespace
 import sys
 import termios
@@ -41,7 +41,7 @@ class Transport:
 class WriterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name) / 'state'
+        self.root = Path(self.tmp.name).resolve() / 'state'
         # Explicit synthetic merged image with a valid 1 MiB Flash declaration.
         fixture = bytearray(merged_bytes(partitions=[
             (1, 2, 0x9000, 0x6000, b"nvs"), (1, 1, 0xF000, 0x1000, b"phy_init"),
@@ -80,6 +80,101 @@ class WriterTests(unittest.TestCase):
         self.assertEqual((self.root / 'status.json').stat().st_mode & 0o777, 0o644)
         self.assertEqual(public['records'][0]['image_sha256'], self.fw.sha256)
         self.assertEqual(public['records'][0]['image_size'], self.fw.size)
+
+    def test_persisted_stage_log_is_identity_bound_ordered_and_separate_from_status(self):
+        from typix_copilot.diagnostics import read_job_log, format_record_log
+        self.assertEqual(self.run_transaction()[0], 0)
+        detail = read_job_log(self.journal.record, self.root / 'logs', trusted_uid=os.getuid())
+        self.assertEqual(detail['identity']['image_sha256'], self.fw.sha256)
+        phases = [event['phase'] for event in detail['events']]
+        self.assertLess(phases.index('backup'), phases.index('write'))
+        self.assertLess(phases.index('write'), phases.index('verify'))
+        self.assertEqual(phases[-1], 'complete')
+        times = [event['elapsed_ms'] for event in detail['events']]
+        self.assertEqual(times, sorted(times))
+        text = format_record_log(self.journal.record, detail)
+        self.assertIn('阶段日志', text)
+        self.assertNotIn('flash-backup.bin', text)
+        self.assertNotIn('events', json.loads((self.root/'status.json').read_text())['records'][0])
+        self.assertEqual((self.root/'logs'/(self.journal.identifier+'.json')).stat().st_mode & 0o777, 0o644)
+
+    def test_packet_timeout_records_checked_and_partial_bytes_without_exposing_payload(self):
+        failure = type('FatalError', (Exception,), {'__module__': 'esptool.util'})
+        for received, message, category in [(0, 'Serial data stream stopped', 'stream-stopped'),
+                (4096, 'Serial data stream stopped', 'stream-stopped'),
+                (65536, 'Serial data stream stopped', 'stream-stopped'),
+                (65536, 'Digest mismatch', 'digest-mismatch'),
+                (65536, 'Expected digest', 'digest-frame')]:
+            with self.subTest(received=received, category=category):
+                transport = SerialTransport.__new__(SerialTransport)
+                transport.board, transport.journal = MagicMock(), self.journal
+                transport.enter = MagicMock(return_value='bound')
+                transport.connect = MagicMock(return_value=1024*1024)
+                transport.write, transport.restart, transport.close = MagicMock(), MagicMock(), MagicMock()
+                transport.esp = MagicMock()
+                def read(offset, amount, progress_fn=None):
+                    progress_fn(received, amount, offset)
+                    raise failure(message + ': SECRET_FLASH_BYTES')
+                transport.esp.read_flash.side_effect = read
+                self.assertEqual(execute(self.fw, self.data, self.journal, transport), 1)
+                record = self.journal.record
+                self.assertEqual(record['chunk_received_bytes'], received)
+                self.assertEqual(record['last_checked_bytes'], 0)
+                self.assertEqual(record['error_category'], category)
+                self.assertEqual(record['awaiting_digest'], received == 65536 and category == 'stream-stopped')
+                self.assertFalse(record['write_started'])
+                transport.write.assert_not_called()
+                self.assertNotIn('SECRET', (self.root/'logs'/(self.journal.identifier+'.json')).read_text())
+
+    def test_log_only_disk_failure_cannot_interrupt_started_write(self):
+        import errno
+        from typix_copilot import writer
+        original = writer.private_write
+        def save(path, data, *args):
+            if path.parent == self.root / 'logs' and self.journal.hardware_started:
+                raise OSError(errno.ENOSPC, 'full')
+            return original(path, data, *args)
+        with patch.object(writer, 'private_write', side_effect=save):
+            result, calls = self.run_transaction()
+        self.assertEqual(result, 0)
+        self.assertIn('restart', calls)
+        self.assertTrue(self.journal.record['audit_degraded'])
+
+    def test_terminal_detail_failure_persists_warning_and_marks_partial_history(self):
+        import errno
+        from typix_copilot import writer
+        from typix_copilot.diagnostics import read_job_log, format_record_log
+        original = writer.private_write
+        def save(path, data, *args):
+            if path.parent == self.root / 'logs' and self.journal.record['phase'] == 'complete':
+                raise OSError(errno.ENOSPC, 'private path must not leak')
+            return original(path, data, *args)
+        with patch.object(writer, 'private_write', side_effect=save):
+            result, calls = self.run_transaction()
+        self.assertEqual(result, 0)
+        self.assertEqual(calls.count('restart'), 1)
+        record = json.loads((self.root / 'status.json').read_bytes())['records'][0]
+        self.assertTrue(record['audit_degraded'])
+        self.assertTrue(json.loads((self.journal.job/'result.json').read_bytes())['audit_degraded'])
+        details = read_job_log(record, root=self.root/'logs', trusted_uid=os.getuid())
+        self.assertEqual(details['events'][-1]['phase'], 'restart')
+        text = format_record_log(record, details)
+        self.assertIn('记录保存不完整', text)
+        self.assertIn('阶段日志未保存到最终状态', text)
+        self.assertNotIn('private path', text)
+
+    def test_diagnostic_events_are_bounded_and_keep_first_and_final(self):
+        from typix_copilot.diagnostics import MAX_LOG_EVENTS, MAX_LOG_BYTES
+        for index in range(MAX_LOG_EVENTS + 30):
+            self.journal.emit('backup', .18 if index % 2 else .19)
+        self.journal.emit('failed', .19, status='failed', code='transport-failed', failed_phase='backup')
+        path = self.root/'logs'/(self.journal.identifier+'.json')
+        raw = json.loads(path.read_bytes())
+        self.assertEqual(len(raw['events']), MAX_LOG_EVENTS)
+        self.assertTrue(raw['truncated'])
+        self.assertEqual(raw['events'][0]['phase'], 'backup')
+        self.assertEqual(raw['events'][-1]['phase'], 'failed')
+        self.assertLessEqual(path.stat().st_size, MAX_LOG_BYTES)
 
     def test_transport_close_error_does_not_mask_terminal_success_or_failure(self):
         for failure in (None, 'backup'):
@@ -176,7 +271,7 @@ class WriterTests(unittest.TestCase):
         self.assertFalse(final['write_started'])
         self.assertFalse(final['backup_complete'])
         self.assertEqual(transport.esp.method_calls,
-                         [call.read_flash(0, 65536), call.read_flash(65536, 65536)])
+                         [call.read_flash(0, 65536, progress_fn=ANY), call.read_flash(65536, 65536, progress_fn=ANY)])
         transport.write.assert_not_called()
         transport.restart.assert_not_called()
         transport.close.assert_called_once_with()
@@ -423,7 +518,7 @@ class ChunkedReadTests(unittest.TestCase):
 
     def test_exact_offsets_tail_and_progress_only_after_checked_chunks_return(self):
         data = b'A' * self.chunk + b'B' * self.chunk + b'tail'
-        expected_reads = [call(0, self.chunk), call(self.chunk, self.chunk), call(2 * self.chunk, 4)]
+        expected_reads = [call(0, self.chunk, progress_fn=ANY), call(self.chunk, self.chunk, progress_fn=ANY), call(2 * self.chunk, 4, progress_fn=ANY)]
         for phase, low, width in [('backup', .18, .25), ('verify', .77, .16)]:
             with self.subTest(phase=phase):
                 self.transport.esp.reset_mock()
@@ -432,21 +527,24 @@ class ChunkedReadTests(unittest.TestCase):
                 completed = 0
                 inside_read = False
 
-                def read_flash(offset, amount):
+                def read_flash(offset, amount, progress_fn=None):
                     nonlocal completed, inside_read
                     self.assertEqual(self.transport.attempted_offset, offset)
                     self.assertEqual(self.transport.last_checked_bytes, offset)
                     inside_read = True
                     timeline.append(('read', offset, amount))
                     try:
-                        # Fake the loader completing its data/digest exchange.
+                        # Packet callbacks must not trigger journal I/O before the digest returns.
+                        for received in range(min(4096, amount), amount + 1, min(4096, amount)):
+                            progress_fn(received, amount, offset)
+                        self.assertEqual(self.transport.chunk_received_bytes, amount)
                         return data[offset:offset + amount]
                     finally:
                         completed = offset + amount
                         timeline.append(('checked', completed))
                         inside_read = False
 
-                def emit(observed_phase, progress):
+                def emit(observed_phase, progress, **fields):
                     self.assertFalse(inside_read)
                     self.assertEqual(observed_phase, phase)
                     self.assertAlmostEqual(progress, low + width * completed / len(data))
@@ -469,11 +567,11 @@ class ChunkedReadTests(unittest.TestCase):
                 ])
 
     def test_exact_multiple_has_no_extra_or_repeated_read(self):
-        self.transport.esp.read_flash.side_effect = lambda offset, amount: b'X' * amount
+        self.transport.esp.read_flash.side_effect = lambda offset, amount, progress_fn=None: b'X' * amount
         result = self.transport.read(2 * self.chunk, 'backup')
         self.assertEqual(len(result), 2 * self.chunk)
         self.assertEqual(self.transport.esp.method_calls,
-                         [call.read_flash(0, self.chunk), call.read_flash(self.chunk, self.chunk)])
+                         [call.read_flash(0, self.chunk, progress_fn=ANY), call.read_flash(self.chunk, self.chunk, progress_fn=ANY)])
         self.assertEqual(self.transport.journal.emit.call_count, 2)
         self.transport.board.assert_not_called()
 
@@ -485,7 +583,7 @@ class ChunkedReadTests(unittest.TestCase):
                     self.transport.esp.reset_mock()
                     self.transport.journal.reset_mock()
 
-                    def read_flash(offset, amount):
+                    def read_flash(offset, amount, progress_fn=None):
                         return b'X' * (amount + length_delta if offset // self.chunk == failed_segment else amount)
 
                     self.transport.esp.read_flash.side_effect = read_flash
@@ -493,7 +591,7 @@ class ChunkedReadTests(unittest.TestCase):
                         self.transport.read(size, 'verify')
                     self.assertEqual(error.exception.code, 'readback-length')
                     self.assertEqual(self.transport.esp.method_calls, [
-                        call.read_flash(index * self.chunk, min(self.chunk, size - index * self.chunk))
+                        call.read_flash(index * self.chunk, min(self.chunk, size - index * self.chunk), progress_fn=ANY)
                         for index in range(failed_segment + 1)
                     ])
                     self.assertEqual(self.transport.journal.emit.call_count, failed_segment)
@@ -511,20 +609,20 @@ class ChunkedReadTests(unittest.TestCase):
                     self.transport.read(3 * self.chunk, 'verify')
                 self.assertIs(error.exception, failure)
                 self.assertEqual(self.transport.esp.method_calls,
-                                 [call.read_flash(0, self.chunk), call.read_flash(self.chunk, self.chunk)])
+                                 [call.read_flash(0, self.chunk, progress_fn=ANY), call.read_flash(self.chunk, self.chunk, progress_fn=ANY)])
                 self.assertEqual(self.transport.journal.emit.call_count, 1)
                 self.assertEqual(self.transport.attempted_offset, self.chunk)
                 self.assertEqual(self.transport.last_checked_bytes, self.chunk)
                 self.assertEqual(self.transport.board.method_calls, [])
 
     def test_new_read_resets_counters_before_first_attempt_and_on_empty_read(self):
-        self.transport.esp.read_flash.side_effect = lambda offset, amount: b'X' * amount
+        self.transport.esp.read_flash.side_effect = lambda offset, amount, progress_fn=None: b'X' * amount
         self.transport.read(2 * self.chunk, 'backup')
         self.assertEqual(self.transport.last_checked_bytes, 2 * self.chunk)
         self.transport.esp.reset_mock()
         self.transport.journal.reset_mock()
 
-        def fail_first(offset, amount):
+        def fail_first(offset, amount, progress_fn=None):
             self.assertEqual(self.transport.attempted_offset, 0)
             self.assertEqual(self.transport.last_checked_bytes, 0)
             raise OSError('first read failed')
@@ -533,13 +631,13 @@ class ChunkedReadTests(unittest.TestCase):
             self.transport.read(2 * self.chunk, 'verify')
         self.assertEqual(self.transport.attempted_offset, 0)
         self.assertEqual(self.transport.last_checked_bytes, 0)
-        self.transport.esp.read_flash.assert_called_once_with(0, self.chunk)
+        self.transport.esp.read_flash.assert_called_once_with(0, self.chunk, progress_fn=ANY)
         self.transport.journal.emit.assert_not_called()
         self.transport.attempted_offset, self.transport.last_checked_bytes = 123, 456
         self.assertEqual(self.transport.read(0, 'backup'), b'')
         self.assertEqual(self.transport.attempted_offset, 0)
         self.assertEqual(self.transport.last_checked_bytes, 0)
-        self.transport.esp.read_flash.assert_called_once_with(0, self.chunk)
+        self.transport.esp.read_flash.assert_called_once_with(0, self.chunk, progress_fn=ANY)
 
 
 class ExceptionDiagnosticsTests(unittest.TestCase):
