@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>TypixDeck</vendor>
+  <action id="org.typixdeck.copilot.write">
+    <description>Write the TypixDeck onboard coprocessor firmware</description>
+    <description xml:lang="zh_CN">写入 TypixDeck 板载协处理器固件</description>
+    <message>Authenticate to back up and write the selected TypixDeck firmware.</message>
+    <message xml:lang="zh_CN">授权备份并写入所选 TypixDeck 固件。写入时请勿断电。</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/typix-copilot-write</annotate>
+  </action>
+</policyconfig>

@@ -1,0 +1,46 @@
+* { font-family: 'PingFang SC', 'Noto Sans CJK SC', sans-serif; font-size: 13px; }
+window, dialog { background: #09131c; color: #e8f1f5; }
+.topbar { background: #0c1923; border-bottom: 1px solid #21313d; padding: 12px 18px; }
+.brand { font-size: 20px; font-weight: 800; letter-spacing: 2px; color: #f0fcff; }
+.eyebrow { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: #69d9ca; }
+.heading { font-size: 25px; font-weight: 700; color: #f5fcff; }
+.title { font-size: 19px; font-weight: 700; color: #eff9ff; }
+.subheading { font-size: 15px; font-weight: 600; }
+.muted { color: #94aab8; font-size: 12px; }
+.small { font-size: 11px; color: #94aab8; }
+.accent { color: #69d9ca; }
+.warning { color: #eeb778; }
+.simulation { background: #30291f; border: 1px solid #5b4730; border-radius: 7px; padding: 5px 10px; color: #f3c484; font-size: 11px; }
+.sidebar { background: #0c1923; padding: 17px 10px 12px; border-right: 1px solid #21313d; }
+.footer { padding: 7px 15px; border-top: 1px solid #21313d; background: #0c1923; }
+.card { background: #102330; border: 1px solid #283e4b; border-radius: 12px; padding: 15px; }
+.featured { background: #113034; border: 1px solid #2c615d; border-radius: 13px; padding: 18px; }
+.device-card { background: #13242e; border: 1px solid #29404c; border-radius: 9px; padding: 10px; }
+.pill { background: #1b333d; color: #bde4e2; border-radius: 5px; padding: 3px 7px; font-size: 10px; }
+.divider { background: #253946; min-height: 1px; }
+.mono { font-family: 'SF Mono', monospace; font-size: 10px; color: #9ab4c2; }
+button { background: #142a37; color: #d6e9ed; border: 1px solid #304753; border-radius: 8px; box-shadow: none; text-shadow: none; padding: 6px 11px; min-height: 25px; }
+button:hover { background: #1b3c49; border-color: #69b5b3; }
+button:focus { outline: 2px solid #75e4d4; outline-offset: 1px; }
+button:disabled { color: #627986; background: #13212b; border-color: #273741; }
+button.primary { background: #75e4ce; color: #08272b; border-color: #75e4ce; font-weight: 700; }
+button.primary:hover { background: #99efdc; }
+button.primary:disabled { background: #294b48; color: #779e97; border-color: #294b48; }
+button.nav { background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 9px 9px; }
+button.nav.active { background: #163638; color: #8bedda; border-color: #2a5756; }
+button.filter { font-size: 12px; padding: 3px 11px; min-height: 22px; background: transparent; }
+button.filter.active { color: #91eddd; background: #193a3e; border-color: #427069; }
+button.flat { background: transparent; border-color: transparent; color: #a5beca; }
+entry { background: #0d202a; border: 1px solid #2a414e; border-radius: 8px; color: #e3f4f8; min-height: 34px; padding: 1px 9px; box-shadow: none; }
+entry:focus { border-color: #78dfcf; }
+combobox button { min-height: 28px; }
+menu { background: #142a37; color: #dceef3; }
+menuitem:hover { background: #27545a; }
+textview, textview text { background: #102330; color: #dceef3; }
+expander title { color: #99b7c4; padding: 5px 0; }
+checkbutton { color: #d5e9ed; }
+progressbar text { color: #badbdc; padding-bottom: 7px; }
+progressbar trough { background: #1b3341; border: none; min-height: 8px; border-radius: 4px; }
+progressbar progress { background: #75e4ce; border: none; border-radius: 4px; }
+scrollbar { background: transparent; }
+scrollbar slider { background: #36515f; min-width: 5px; min-height: 35px; border-radius: 5px; }

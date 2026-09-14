@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+build/
+dist/
+cache/
+downloads/
+backups/
+transactions/
+*.bin
+*.deb
+*.log
+*.key
+private*.pem
+.DS_Store
+
+# Only reviewed versioned distribution images belong in Git.
+!firmware/*/*/*.bin
