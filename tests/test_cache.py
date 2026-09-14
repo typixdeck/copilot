@@ -41,6 +41,35 @@ class Response(io.BytesIO):
         return self.read(size)
 
 
+class OfficialMirrorTests(unittest.TestCase):
+    def test_all_pinned_downloads_match_the_public_mirror_index(self):
+        from typix_copilot.registry import parse_catalog, REGISTRY_BASE
+        root = Path(__file__).resolve().parents[1]
+        indexed = {fw.id: fw for fw in parse_catalog((root / "firmware/index.json").read_bytes())}
+        for pinned in load_catalog():
+            with self.subTest(firmware=pinned.id):
+                expected = (REGISTRY_BASE + "typixdeck-official/" + pinned.version
+                            + "/" + pinned.filename)
+                self.assertEqual(module._known(pinned), expected)
+                self.assertEqual(indexed[pinned.id].download_url, expected)
+                self.assertEqual(indexed[pinned.id].sha256, pinned.sha256)
+                self.assertEqual(indexed[pinned.id].source_url, pinned.source_url)
+
+    def test_official_mirror_download_and_existing_cache_reuse(self):
+        root = Path(__file__).resolve().parents[1]
+        firmware = load_catalog()[-1]
+        data = (root / "firmware/typixdeck-official" / firmware.version / firmware.filename).read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ArtifactCache(Path(directory).resolve() / "cache")
+            url = module._known(firmware)
+            cache._opener = Mock(side_effect=lambda request, **kw: Response(data, request.full_url))
+            target = cache.ensure(firmware)
+            self.assertEqual(cache._opener.call_args.args[0].full_url, url)
+            self.assertEqual(target.read_bytes(), data)
+            cache._opener = Mock(side_effect=AssertionError("Verified cache must remain offline"))
+            self.assertEqual(cache.ensure(firmware), target)
+
+
 class CacheTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

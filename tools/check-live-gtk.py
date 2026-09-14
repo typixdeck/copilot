@@ -21,6 +21,10 @@ def public_catalog():
     return parse_catalog((Path(__file__).resolve().parents[1] / "firmware/index.json").read_bytes())
 
 
+def diy_firmware():
+    return next(fw for fw in public_catalog() if fw.publisher == "自研")
+
+
 class FakeRegistry:
     def __init__(self, error=False):
         self.error = error
@@ -112,7 +116,7 @@ class LiveWindowTests(unittest.TestCase):
         self.app.refresh_catalog()
         self.app._registry_worker.join(timeout=2)
         drain()
-        self.assertEqual(len(self.app.catalog), len(load_catalog()) + len(public_catalog()))
+        self.assertEqual(len(self.app.catalog), len({fw.id for fw in load_catalog() + public_catalog()}))
         self.assertEqual(self.app.catalog_status, "在线目录已更新")
         self.app.change_filter("自研")
         texts = []
@@ -124,7 +128,7 @@ class LiveWindowTests(unittest.TestCase):
                     collect(child)
         collect(self.app.results)
         self.assertIn("TypixDeck DIY", texts)
-        self.app.show_detail(public_catalog()[0].id)
+        self.app.show_detail(diy_firmware().id)
         self.assertTrue(self.app.download_button.get_sensitive())
         self.assertFalse(self.app.write_button.get_sensitive())
         self.app.confirm_write()
@@ -155,7 +159,7 @@ class LiveWindowTests(unittest.TestCase):
         self.assertIsNotNone(self.app._pending_catalog)
         self.app.show_page("store")
         self.assertIsNone(self.app._pending_catalog)
-        self.assertIn(public_catalog()[0].id, self.app.firmwares)
+        self.assertIn(diy_firmware().id, self.app.firmwares)
 
     def test_catalog_download_caches_without_controller_or_write_success(self):
         class DownloadCache(FakeCache):
@@ -164,7 +168,7 @@ class LiveWindowTests(unittest.TestCase):
                 return Path("/unused/fake-cache.bin")
         self.app.cache = DownloadCache()
         self.app._apply_catalog(public_catalog())
-        self.app.show_detail(public_catalog()[0].id)
+        self.app.show_detail(diy_firmware().id)
         original = self.controller.firmware
         self.app.start_download()
         self.app._worker.join(timeout=2)
@@ -186,7 +190,7 @@ class LiveWindowTests(unittest.TestCase):
                 raise AssertionError("Download did not receive cancellation")
         self.app.cache = DownloadCache()
         self.app._apply_catalog(public_catalog())
-        self.app.show_detail(public_catalog()[0].id)
+        self.app.show_detail(diy_firmware().id)
         self.app.start_download()
         self.assertTrue(self.app.navigation_locked)
         self.assertTrue(self.app.close_window())
@@ -310,11 +314,11 @@ class LiveWindowTests(unittest.TestCase):
         self.assertEqual(self.app.operation_button.get_label(), "刷新维护状态")
         self.assertTrue(self.app.close_window())
 
-    def test_historical_firmware_has_disabled_write_and_no_download_button(self):
+    def test_historical_firmware_can_download_but_has_disabled_write(self):
         self.app.show_detail(self.app.catalog[1].id)
         self.assertEqual(self.app.write_button.get_label(), "写入")
         self.assertFalse(self.app.write_button.get_sensitive())
-        self.assertFalse(hasattr(self.app, "download_button"))
+        self.assertTrue(self.app.download_button.get_sensitive())
         self.app.confirm_write()
         self.assertEqual(self.app.page_name, "detail")
 

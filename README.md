@@ -2,7 +2,9 @@
 
 TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry Pi 主系统上，通过 Launcher 全屏启动。
 
-**0.1.4 新增在线固件目录**：启动时读取本仓库的 [`firmware/index.json`](firmware/index.json)，按来源展示版本，并下载对应 bin。刷新失败时保留离线目录，缓存文件每次复用都核对大小、SHA-256 和镜像结构。
+**0.1.5 统一管理官方与 DIY 固件**：启动时读取本仓库的 [`firmware/index.json`](firmware/index.json)，按来源展示版本，并下载对应 bin。刷新失败时保留离线目录，缓存文件每次复用都核对大小、SHA-256 和镜像结构。
+
+已镜像官方 2026-09-10、2026-08-21、2026-08-15、2026-08-14 四个版本，保留原文件及固定哈希。官方条目和 DIY 均从本仓库 `firmware/` 下载，原有缓存直接复用。来源与版本清单见 [官方固件目录](firmware/typixdeck-official/README.md)。
 
 已收录 DIY 0.2.0 候选：传感器、树莓派、应用、设置四页，含本地小乐器、时钟、Wi-Fi 与 NTP。该候选尚未真机验证，当前提供下载与检查；在线目录不会自动授予写入权限。
 
@@ -20,7 +22,7 @@ TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry P
 
 ```sh
 python3 tools/build-deb.py
-sudo apt install ./dist/typix-copilot_0.1.4-1_arm64.deb
+sudo apt install ./dist/typix-copilot_0.1.5-1_arm64.deb
 install -m 644 /usr/share/applications/typix-copilot.desktop ~/Desktop/typix-copilot.desktop
 ```
 

@@ -7,12 +7,19 @@ Copilot 0.1.4 启动或点击“刷新目录”时读取：
 ```text
 firmware/
 ├── index.json
+├── typixdeck-official/
+│   ├── 2026-09-10/
+│   ├── 2026-08-21/
+│   ├── 2026-08-15/
+│   └── 2026-08-14/
 └── typixdeck-diy/
     └── 0.2.0/
         ├── typixdeck-diy-0.2.0-full.bin
         ├── README.md
         └── licenses/
 ```
+
+官方合并镜像已统一收录，版本说明及许可见 [typixdeck-official/](typixdeck-official/README.md)。Copilot 0.1.5 起官方下载使用此镜像；旧客户端仍能解析索引，官方条目不会重复出现。
 
 每个版本使用独立目录，不覆盖已发布 bin。新增固件时复制这个布局，把条目加入 `index.json` 的 `firmwares` 数组，再执行：
 

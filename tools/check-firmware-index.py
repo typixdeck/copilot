@@ -5,13 +5,18 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from typix_copilot.core import inspect_local
+from typix_copilot.core import inspect_local, load_catalog
+from typix_copilot.cache import _known
 from typix_copilot.registry import REGISTRY_BASE, parse_catalog
 
 
 def main():
     root = ROOT / "firmware"
     catalog = parse_catalog((root / "index.json").read_bytes())
+    by_id = {fw.id: fw for fw in catalog}
+    for bundled in load_catalog():
+        if bundled.id not in by_id or by_id[bundled.id].download_url != _known(bundled):
+            raise ValueError(f"Bundled download must match the mirror index: {bundled.id}")
     indexed = set()
     for fw in catalog:
         relative = fw.download_url.removeprefix(REGISTRY_BASE)

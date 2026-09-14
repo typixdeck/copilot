@@ -80,6 +80,7 @@ def _known(firmware: Firmware) -> str:
         return validate_registry_firmware(firmware)
     if (not re.fullmatch(r"[0-9a-f]{64}", firmware.sha256)
             or not re.fullmatch(r"[0-9a-f]{40}", firmware.commit)
+            or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", firmware.version)
             or not re.fullmatch(r"[A-Za-z0-9_.-]+\.bin", firmware.filename)
             or not 0 < firmware.size <= MAX_IMAGE_BYTES):
         raise CacheError("固定固件元数据无效。")
@@ -87,7 +88,10 @@ def _known(firmware: Firmware) -> str:
     expected = f"https://github.com/{repository}/blob/{firmware.commit}/release/{firmware.filename}"
     if firmware.source_url != expected:
         raise CacheError("固件来源不符合固定官方地址。")
-    return f"https://raw.githubusercontent.com/{repository}/{firmware.commit}/release/{firmware.filename}"
+    # Keep the upstream commit/source/hash as provenance and approval evidence;
+    # the byte-identical public mirror is the unified download location.
+    return ("https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/"
+            f"typixdeck-official/{firmware.version}/{firmware.filename}")
 
 
 class ArtifactCache:

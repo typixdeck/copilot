@@ -245,8 +245,7 @@ class LiveCopilotApplication(CopilotApplication):
         else:
             add(page, label("此版本尚未开放写入", "muted"))
             actions = add(page, box(False, 10))
-            if fw.download_url:
-                self.download_button = add(actions, button("下载固件", lambda *_: self.start_download()), True)
+            self.download_button = add(actions, button("下载固件", lambda *_: self.start_download()), True)
             self.write_button = add(actions, button("写入", lambda *_: self.confirm_write(), "primary"), True)
             self.write_button.set_sensitive(False)
         self.content.show_all()
@@ -459,7 +458,7 @@ class LiveCopilotApplication(CopilotApplication):
         if self.navigation_locked or self.importing or self.modal:
             return
         fw = self.firmwares[self.selected]
-        if not fw.download_url:
+        if not fw.download_url and fw not in load_catalog():
             return
         self.cancel_event = threading.Event()
         self.last_result = None
