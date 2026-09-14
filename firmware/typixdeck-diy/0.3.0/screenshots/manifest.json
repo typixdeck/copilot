@@ -1,0 +1,17 @@
+{
+  "kind": "host-framebuffer-preview",
+  "hardware_verified": false,
+  "firmware_version": "0.3.0",
+  "fixtures": "Synthetic sensor, network, clock, audio and Raspberry Pi state. No hardware or network access.",
+  "renderers": {
+    "main/ui.c": "50dbdd8515e3c4dc0e9c6ec14b44d3c44c0a4f4d226299e3a3a6b44336a9df89",
+    "main/ttf_font.c": "4efc4ca5f2895bfc735ec33c1d1d44dfa4278c5d28b4bc31f92ff50893452ef8"
+  },
+  "images": [
+    "instrument-dark.png",
+    "sensors-dark.png",
+    "settings-custom-dark.png",
+    "settings-dark.png",
+    "settings-light.png"
+  ]
+}

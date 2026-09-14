@@ -1,6 +1,6 @@
 # 固件目录
 
-Copilot 0.1.4 启动或点击“刷新目录”时读取：
+Copilot 0.1.4 及以上版本启动或点击“刷新目录”时读取：
 
 `https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/index.json`
 
@@ -13,13 +13,17 @@ firmware/
 │   ├── 2026-08-15/
 │   └── 2026-08-14/
 └── typixdeck-diy/
-    └── 0.2.0/
-        ├── typixdeck-diy-0.2.0-full.bin
+    ├── 0.2.0/
+    └── 0.3.0/
+        ├── typixdeck-diy-0.3.0-full.bin
         ├── README.md
+        ├── screenshots/
         └── licenses/
 ```
 
 官方合并镜像已统一收录，版本说明及许可见 [typixdeck-official/](typixdeck-official/README.md)。Copilot 0.1.5 起官方下载使用此镜像；旧客户端仍能解析索引，官方条目不会重复出现。
+
+最新自研版本为 [DIY 0.3.0](typixdeck-diy/0.3.0/README.md)，页面内提供传感器、设置、小乐器和自定义颜色预览。0.2.0 保留原文件与哈希。
 
 每个版本使用独立目录，不覆盖已发布 bin。新增固件时复制这个布局，把条目加入 `index.json` 的 `firmwares` 数组，再执行：
 

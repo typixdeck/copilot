@@ -110,6 +110,35 @@
       "flash_offset": 0
     },
     {
+      "id": "typixdeck-diy-0.3.0",
+      "version": "0.3.0",
+      "title": "TypixDeck DIY",
+      "summary": "全新紧凑卡片界面；真实传感器状态、一小时曲线、黑白琴键与自定义 RGB 主题色。ESP-IDF 5.5.1 本地构建候选，尚未真机验证。",
+      "filename": "typixdeck-diy-0.3.0-full.bin",
+      "size": 3997320,
+      "sha256": "bceb894b1bddc09b556ddb5da9866b661ab9dee172d74d7026c3779fcd0dee6d",
+      "source_url": "https://github.com/typixdeck/copilot/tree/main/firmware/typixdeck-diy/0.3.0",
+      "commit": "",
+      "layout": "factory 2 MiB · font 4 MiB · 8 MiB Flash",
+      "nvs_reset": true,
+      "capabilities": [
+        "传感器与一小时电量曲线",
+        "树莓派状态",
+        "黑白琴键与本地音源",
+        "时钟",
+        "Wi-Fi 设置",
+        "NTP 对时",
+        "自定义 RGB 与明暗背景"
+      ],
+      "download_url": "typixdeck-diy/0.3.0/typixdeck-diy-0.3.0-full.bin",
+      "publisher": "自研",
+      "hardware_verified": false,
+      "chip": "esp32s3",
+      "board": "typixdeck",
+      "image_kind": "merged-image",
+      "flash_offset": 0
+    },
+    {
       "id": "typixdeck-diy-0.2.0",
       "version": "0.2.0",
       "title": "TypixDeck DIY",
