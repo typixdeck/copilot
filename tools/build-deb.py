@@ -9,7 +9,7 @@ import tarfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.1.5-1'
+VERSION = '0.1.6-1'
 TOOL_SHA = '125781f36e6a2d08c484524a45f340694675368b5eeead9d0cb21b2034a91d98'
 TOOL_URL = 'https://files.pythonhosted.org/packages/source/e/esptool/esptool-5.3.1.tar.gz'
 

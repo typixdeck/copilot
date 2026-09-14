@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "repository": "typixdeck/copilot",
+  "distribution": "complete-deb",
+  "application": {
+    "id": "ai.typixdeck.copilot",
+    "package": "typix-copilot",
+    "name": {
+      "zh-CN": "Copilot",
+      "en": "Copilot"
+    },
+    "summary": {
+      "zh-CN": "TypixDeck 板载 ESP32-S3 固件商店"
+    },
+    "description": {
+      "zh-CN": "原生 GTK3 固件管理应用，在线读取官方与 DIY 固件目录，按来源和版本浏览，下载后校验 SHA-256 并支持离线缓存。包含完整客户端与系统授权写入组件；DIY 当前提供下载和检查，真实刷写链路仍待 CM4 验收。"
+    },
+    "categories": [
+      "System"
+    ],
+    "desktopFile": "typix-copilot.desktop",
+    "runtime": {
+      "kind": "python-module",
+      "module": "typix_copilot",
+      "root": "/usr/lib/python3/dist-packages"
+    },
+    "requiredPayload": [
+      "/usr/bin/typix-copilot",
+      "/usr/libexec/typix-copilot-write",
+      "/etc/typix-copilot/board.json",
+      "/etc/typix-copilot/esptool.cfg",
+      "/usr/share/polkit-1/actions/org.typixdeck.copilot.policy",
+      "/usr/share/icons/hicolor/scalable/apps/typix-copilot.svg",
+      "/usr/lib/typix-copilot/vendor/esptool/__init__.py",
+      "/usr/lib/typix-copilot/vendor/esptool/loader.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/__init__.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/__main__.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/app.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/cache.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/catalog.json",
+      "/usr/lib/python3/dist-packages/typix_copilot/core.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/device.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/live.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/live_app.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/registry.py",
+      "/usr/lib/python3/dist-packages/typix_copilot/style.css",
+      "/usr/lib/python3/dist-packages/typix_copilot/writer.py"
+    ],
+    "compatibility": {
+      "arch": [
+        "arm64"
+      ],
+      "minMemoryMB": 128,
+      "minFreeDiskMB": 64,
+      "display": [
+        "wayland",
+        "x11"
+      ],
+      "requiredFeatures": []
+    }
+  },
+  "release": {
+    "version": "0.1.6-1",
+    "file": "dist/typix-copilot_0.1.6-1_arm64.deb",
+    "sha256": "1787e7c561ce72533d3c30042fe561202253e2da04be00c7a6ebbb1aad35851a"
+  },
+  "screenshots": [
+    {
+      "path": "docs/screenshots/catalog-store.png",
+      "caption": "Copilot 在线目录布局（本机 GTK3 渲染，0.1.4）"
+    },
+    {
+      "path": "docs/screenshots/catalog-diy.png",
+      "caption": "DIY 固件详情（本机 GTK3 渲染，0.1.4）"
+    }
+  ]
+}

@@ -15,7 +15,7 @@
     "third-party",
     "local-import"
   ],
-  "releaseAvailable": false,
+  "releaseAvailable": true,
   "productType": "firmware-store-with-flashing",
   "targetScope": "typixdeck-onboard-coprocessor",
   "targetConnection": "same-device-internal-usb",
@@ -37,7 +37,7 @@
   "previewAvailable": true,
   "previewVersion": "0.1.0-preview.5",
   "hardwareWritingAvailable": true,
-  "version": "0.1.5-1",
+  "version": "0.1.6-1",
   "architecture": "arm64",
   "compatibleOS": [
     "raspios-trixie"
@@ -48,5 +48,6 @@
   "hardwareAcceptance": "Actual write and private8MiB backup completed; independent readback interrupted and recovery ROM entry timed out. User confirmed both displays normal after full-device restart; SSH and runtime USB restored. Full write/readback cycle remains unaccepted.",
   "repository": "https://github.com/typixdeck/copilot",
   "firmwareIndex": "https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/index.json",
-  "onlineCatalogAvailable": true
+  "onlineCatalogAvailable": true,
+  "distribution": "typixdeck/store"
 }

@@ -2,7 +2,7 @@
 
 TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry Pi 主系统上，通过 Launcher 全屏启动。
 
-**0.1.5 统一管理官方与 DIY 固件**：启动时读取本仓库的 [`firmware/index.json`](firmware/index.json)，按来源展示版本，并下载对应 bin。刷新失败时保留离线目录，缓存文件每次复用都核对大小、SHA-256 和镜像结构。
+**0.1.6 支持从 Store 安装和更新**：启动时读取本仓库的 [`firmware/index.json`](firmware/index.json)，按来源展示版本，并下载对应 bin。刷新失败时保留离线目录，缓存文件每次复用都核对大小、SHA-256 和镜像结构。
 
 已镜像官方 2026-09-10、2026-08-21、2026-08-15、2026-08-14 四个版本，保留原文件及固定哈希。官方条目和 DIY 均从本仓库 `firmware/` 下载，原有缓存直接复用。来源与版本清单见 [官方固件目录](firmware/typixdeck-official/README.md)。
 
@@ -20,9 +20,13 @@ TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry P
 
 目标系统：官方 Raspberry Pi OS Trixie ARM64。程序使用 GTK3 + PyGObject。
 
+已配置 `typixdeck/store` 源的设备：打开 Store → 刷新 → 搜索 **Copilot** → 安装或更新。更新完成后关闭旧 Copilot，再从 Launcher 重新打开；在“全部”或“自研”分类中可看到 DIY 固件。0.1.3 及更早客户端只有内置目录，单独更新 GitHub 固件文件无法让旧客户端发现 DIY。
+
+完整包及签名目录见 [Store debs](https://github.com/typixdeck/store/tree/main/debs)。本仓库的 [app.json](app.json) 提供标准应用信息、完整包版本/SHA-256 和截图索引。
+
 ```sh
 python3 tools/build-deb.py
-sudo apt install ./dist/typix-copilot_0.1.5-1_arm64.deb
+sudo apt install ./dist/typix-copilot_0.1.6-1_arm64.deb
 install -m 644 /usr/share/applications/typix-copilot.desktop ~/Desktop/typix-copilot.desktop
 ```
 
@@ -52,6 +56,7 @@ Mac 可双击 [Preview.command](Preview.command)，或运行 `./start-preview.sh
 
 | 路径 | 内容 |
 | --- | --- |
+| `app.json` | Store 应用识别与完整 deb 发布描述 |
 | `src/typix_copilot/` | 原生界面、缓存、目录、板载发现及写入事务 |
 | `packaging/` | 桌面入口、Polkit 授权和板载配置 |
 | `tools/` | deb 构建、预览部署与 GTK 验证 |
