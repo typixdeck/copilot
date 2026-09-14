@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "board": "typixdeck-0720",
+  "controller": "3f980000.usb",
+  "usb_path": "1-1.2",
+  "hub": [
+    "1a40",
+    "0201"
+  ]
+}

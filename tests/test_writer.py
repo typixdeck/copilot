@@ -713,6 +713,28 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(result.port.name, 'ttyACM7')
         self.assertEqual(result.mode, 'runtime')
 
+    def test_cm0_requires_its_observed_controller_while_retaining_endpoint_binding(self):
+        old = self.sys / 'devices/platform/fe9c0000.xhci'
+        new = self.sys / 'devices/platform/3f980000.usb'
+        old.rename(new)
+        physical = new / 'usb1/1-1/1-1.2'
+        (self.usb / '1-1.2').unlink()
+        (self.usb / '1-1.2').symlink_to(physical)
+        interface = self.sys / 'class/tty/ttyACM7/device'
+        interface.unlink()
+        interface.symlink_to(physical / '1-1.2:1.3')
+        with patch('typix_copilot.device.stat.S_ISCHR', return_value=True):
+            with self.assertRaises(DeviceError) as error:
+                Board(self.profile, self.sys, self.dev).probe()
+            self.assertEqual(error.exception.code, 'board-mismatch')
+            profile = {**self.profile, 'controller': '3f980000.usb'}
+            endpoint = Board(profile, self.sys, self.dev).probe()
+            self.assertEqual(endpoint.mode, 'runtime')
+            self.assertEqual(endpoint.port.name, 'ttyACM7')
+            (self.usb / '1-1/idProduct').write_text('ffff')
+            with self.assertRaises(DeviceError):
+                Board(profile, self.sys, self.dev).probe()
+
     def test_foreign_hub_or_runtime_product_refused(self):
         for file, bad in [(self.usb / '1-1/idProduct', 'ffff'), (self.physical / 'product', 'Other S3')]:
             old = file.read_text(); file.write_text(bad)
