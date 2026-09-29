@@ -110,6 +110,36 @@
       "flash_offset": 0
     },
     {
+      "id": "typixdeck-diy-0.4.1",
+      "version": "0.4.1",
+      "title": "TypixDeck DIY",
+      "summary": "预发布版：连接拓扑、历史曲线、Pi 配对共享；修正音量、HTTPS 连接与主题色。电量异常仍在诊断，尚未完成本版真机验收。",
+      "filename": "typixdeck-diy-0.4.1-full.bin",
+      "size": 3997320,
+      "sha256": "c72336499a47a8316bc02594e4de9dd46052c2099df2ef796e353d7e7de99903",
+      "source_url": "https://github.com/typixdeck/diy-esp32s3-firmware/tree/3a377c85d6ee891522263ef96f306eddfeab7e64",
+      "commit": "3a377c85d6ee891522263ef96f306eddfeab7e64",
+      "layout": "factory 2 MiB · font 4 MiB · 8 MiB Flash",
+      "nvs_reset": true,
+      "capabilities": [
+        "组件连接拓扑",
+        "功耗历史曲线",
+        "Pi 配对只读共享",
+        "小乐器与时钟",
+        "实体键盘输入",
+        "Wi-Fi 与 NTP",
+        "背景及边框主题色",
+        "电量计只读诊断"
+      ],
+      "download_url": "typixdeck-diy/0.4.1/typixdeck-diy-0.4.1-full.bin",
+      "publisher": "自研",
+      "hardware_verified": false,
+      "chip": "esp32s3",
+      "board": "typixdeck",
+      "image_kind": "merged-image",
+      "flash_offset": 0
+    },
+    {
       "id": "typixdeck-diy-0.3.0",
       "version": "0.3.0",
       "title": "TypixDeck DIY",

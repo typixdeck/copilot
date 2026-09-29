@@ -534,7 +534,12 @@ class SerialTransport:
             self.journal.emit('enter', .12, durable=True, boot_requested=True)
             connection.write(b'EGGFLY_REBOOT_TO_BOOT_MODE\n')
             connection.flush()
-        return self.board.wait('rom', 20)
+            # Keep the native CDC session open until the mode transition is
+            # observed. tcdrain/flush only confirms the host submitted bytes;
+            # the firmware processes this command in its next 1 Hz task tick.
+            # Closing immediately drops the host line state during that window.
+            # A timeout still closes the port and never resends the command.
+            return self.board.wait('rom', 20)
 
     def connect(self, endpoint):
         from esptool.targets.esp32s3 import ESP32S3ROM
@@ -544,6 +549,12 @@ class SerialTransport:
         self.esp = esp
         # No generic detection/reset fallback. Verify this ROM's own chip ID first.
         esp.connect(mode='no-reset', attempts=3, detecting=True, warnings=False)
+        # run_stub silently reuses an already running RAM stub. Its version is
+        # unknown after an interrupted job or a Copilot upgrade; in particular
+        # the old USB read bug would survive replacing the installed JSON.
+        # Do not overwrite a running stub or reset/retry without a fresh ROM.
+        if esp.sync_stub_detected:
+            raise WriteError('stale-stub')
         security = esp.get_security_info(cache=False)
         flags = security['parsed_flags']
         if security['chip_id'] != 9:

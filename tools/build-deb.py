@@ -10,12 +10,27 @@ import sys
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.2.1-1'
+VERSION = '0.2.4-1'
 TOOL_SHA = '125781f36e6a2d08c484524a45f340694675368b5eeead9d0cb21b2034a91d98'
 TOOL_URL = 'https://files.pythonhosted.org/packages/source/e/esptool/esptool-5.3.1.tar.gz'
+STUB_SHA = '8816e0611701e8f7396a9fee9d1d33bc2021751bf24bda54560fb87c62de3f0b'
+STUB_URL = 'https://github.com/espressif/esp-flasher-stub/releases/download/v1.2.2/esp32s3.json'
+
+
+def checked_s3_stub():
+    """Exact upstream release asset, also bundled by esptool v5.4.0.
+
+    Update only the S3 RAM stub: keep the audited host loader/dependencies.
+    v1.2.2 includes the OTG full-packet/ZLP fix missing in bundled v1.0.0.
+    """
+    data = (ROOT / 'vendor/esp32s3-v1.2.2.json').read_bytes()
+    if len(data) != 16780 or hashlib.sha256(data).hexdigest() != STUB_SHA:
+        raise SystemExit('ESP32-S3 stub hash/size mismatch')
+    return data
 
 
 def main():
+    stub = checked_s3_stub()
     subprocess.run([sys.executable, str(ROOT / "tools/check-firmware-index.py")], check=True)
     build = ROOT / 'build'
     build.mkdir(exist_ok=True)
@@ -65,6 +80,13 @@ Description: TypixDeck onboard ESP32-S3 firmware store and writer
     put('DEBIAN/conffiles', '/etc/typix-copilot/board.json\n/etc/typix-copilot/esptool.cfg\n')
     copy_tree(ROOT / 'src/typix_copilot', Path('usr/lib/python3/dist-packages/typix_copilot'))
     copy_tree(source / 'esptool-5.3.1/esptool', Path('usr/lib/typix-copilot/vendor/esptool'))
+    put('usr/lib/typix-copilot/vendor/esptool/targets/stub_flasher/2/esp32s3.json', stub.decode('utf-8'))
+    put('usr/share/doc/typix-copilot/esp32s3-stub.txt',
+        'ESP32-S3 RAM stub: esp-flasher-stub v1.2.2\nSource: ' + STUB_URL +
+        '\nSHA256: ' + STUB_SHA + '\nLicense: MIT (see esp-flasher-stub-LICENSE-MIT)\n'
+        'Overrides only generation-2 esp32s3.json; other bundled targets retain their upstream version.\n')
+    put('usr/share/doc/typix-copilot/esp-flasher-stub-LICENSE-MIT',
+        (ROOT / 'vendor/esp-flasher-stub-LICENSE-MIT').read_text())
     put('usr/bin/typix-copilot', '#!/bin/sh\nexec /usr/bin/python3 -I -m typix_copilot "$@"\n', 0o755)
     put('usr/libexec/typix-copilot-write', '#!/usr/bin/python3 -I\nfrom typix_copilot.writer import main\nraise SystemExit(main())\n', 0o755)
     for src, dst in [('board.json','etc/typix-copilot/board.json'),

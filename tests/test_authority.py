@@ -47,10 +47,10 @@ class BundledGrantTests(unittest.TestCase):
         module._proofs.clear()
         self.addCleanup(module._proofs.clear)
 
-    def test_all_six_bundled_firmwares_have_exact_root_readable_grants(self):
+    def test_all_bundled_firmwares_have_exact_root_readable_grants(self):
         catalog = module.bundled_catalog()
-        self.assertEqual(len(catalog), 6)
-        self.assertEqual(sum(fw.publisher == "自研" for fw in catalog), 2)
+        self.assertEqual(len(catalog), 7)
+        self.assertEqual(sum(fw.publisher == "自研" for fw in catalog), 3)
         for fw in catalog:
             with self.subTest(firmware=fw.id):
                 self.assertEqual(module.authorize_firmware(fw), fw)

@@ -454,6 +454,37 @@ class WriterTests(unittest.TestCase):
             transport.enter()
         self.assertEqual(observed, [(b'\nAW_DUMP\n', True), (b'EGGFLY_REBOOT_TO_BOOT_MODE\n', True)])
 
+    def test_boot_request_keeps_cdc_open_until_rom_or_timeout_without_retry(self):
+        for timeout in (False, True):
+            with self.subTest(timeout=timeout):
+                board = MagicMock()
+                board.profile = {'board': 'fixture'}
+                board.probe.return_value = SimpleNamespace(mode='runtime')
+                connection = MagicMock()
+                connection.__enter__.return_value = connection
+                connection.__exit__.return_value = False
+                connection.read_until.return_value = b'CONFIG_P0 [0x04] boot=0xFE live=0xFE\r\n'
+                def wait(mode, seconds):
+                    self.assertEqual((mode, seconds), ('rom', 20))
+                    connection.__exit__.assert_not_called()
+                    self.assertTrue(connection.dtr)
+                    if timeout:
+                        raise DeviceError('rom-timeout')
+                    return 'bound-ROM'
+                board.wait.side_effect = wait
+                transport = SerialTransport.__new__(SerialTransport)
+                transport.board, transport.journal = board, self.journal
+                with patch('typix_copilot.writer.open_bound_serial', return_value=connection):
+                    if timeout:
+                        with self.assertRaises(DeviceError):
+                            transport.enter()
+                    else:
+                        self.assertEqual(transport.enter(), 'bound-ROM')
+                connection.__exit__.assert_called_once()
+                self.assertEqual(connection.write.call_args_list, [call(b'\nAW_DUMP\n'),
+                                  call(b'EGGFLY_REBOOT_TO_BOOT_MODE\n')])
+                board.wait.assert_called_once()
+
     def test_restart_clears_only_force_download_before_watchdog(self):
         transport = SerialTransport.__new__(SerialTransport)
         transport.esp = MagicMock()
@@ -486,6 +517,7 @@ class WriterTests(unittest.TestCase):
 
     def test_connect_checks_security_before_stub_and_disables_unbound_retry(self):
         esp = MagicMock()
+        esp.sync_stub_detected = False
         esp.get_security_info.return_value = dict(chip_id=9, flash_crypt_cnt=0,
             parsed_flags=dict(SECURE_BOOT_EN=False, SECURE_DOWNLOAD_ENABLE=False))
         esp.get_secure_boot_enabled.return_value = False
@@ -506,6 +538,15 @@ class WriterTests(unittest.TestCase):
             esp.get_security_info.return_value['flash_crypt_cnt'] = 1
             with self.assertRaises(WriteError): transport.connect('bound')
             cmds.run_stub.assert_not_called()
+            esp.get_security_info.reset_mock()
+            esp.sync_stub_detected = True
+            with self.assertRaises(WriteError) as error:
+                transport.connect('bound')
+            self.assertEqual(error.exception.code, 'stale-stub')
+            esp.get_security_info.assert_not_called()
+            cmds.run_stub.assert_not_called()
+            esp.watchdog_reset.assert_not_called()
+            esp.hard_reset.assert_not_called()
 
 
 class ChunkedReadTests(unittest.TestCase):

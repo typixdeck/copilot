@@ -13,7 +13,7 @@
       "zh-CN": "TypixDeck 板载 ESP32-S3 固件商店"
     },
     "description": {
-      "zh-CN": "原生 GTK3 板载 ESP32-S3 固件商店。所有签名目录版本统一写入，自动复用缓存或下载校验；本地固件管理缓存。写入记录支持展开阶段耗时、读取进度、失败位置与脱敏异常并复制日志。保留 Polkit 授权、板级检查、私有备份和独立回读校验；完整刷写链路仍待 CM4 验收。"
+      "zh-CN": "原生 GTK3 板载 ESP32-S3 固件商店。0.2.4 预发布版收录 DIY 0.4.1，更新 ESP32-S3 RAM 维护程序并改善进入维护模式的等待处理。统一写入，按需下载校验或复用缓存；支持详细日志。保留 Polkit 授权、板级检查、私有备份和独立回读；完整刷写链路仍待 CM4 验收。"
     },
     "categories": [
       "System"
@@ -65,9 +65,9 @@
     }
   },
   "release": {
-    "version": "0.2.1-1",
-    "file": "dist/typix-copilot_0.2.1-1_arm64.deb",
-    "sha256": "2abb8ea923cf055bfee9585e63d8a04f240d9f15825481861fd3152c7a18c730"
+    "version": "0.2.4-1",
+    "file": "dist/typix-copilot_0.2.4-1_arm64.deb",
+    "sha256": "36feaf0d24b36f41ff2f45e272de9e105ae017ce2b1b9b59dcc3451d30364423"
   },
   "screenshots": [
     {

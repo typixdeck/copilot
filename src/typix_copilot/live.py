@@ -58,6 +58,7 @@ ERROR_TEXT = {
     "low-storage": "存储空间不足", "input-timeout": "接收固件超时", "readback-length": "回读数据不完整",
     "unsafe-state": "维护记录目录不安全", "unsafe-lock": "维护锁不可用",
     "tool-version": "写入工具版本不匹配", "stub-unavailable": "维护程序无法启动",
+    "stale-stub": "检测到上次残留的维护程序，请重启整机后再写入",
     "preflight-failed": "写入预检失败", "invalid-request": "写入请求无效",
     "restart-mode": "设备复位方式检查失败",
 }
