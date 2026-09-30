@@ -110,6 +110,38 @@
       "flash_offset": 0
     },
     {
+      "id": "typixdeck-diy-0.4.2",
+      "version": "0.4.2",
+      "title": "TypixDeck DIY",
+      "summary": "电量修正预发布版：补齐 STC3117 初始化和满充判定；切屏保留计数，异常读数显示未知。原装 2400 mAh 电池参考配置，尚未完成本版真机验收。",
+      "filename": "typixdeck-diy-0.4.2-full.bin",
+      "size": 3997320,
+      "sha256": "eb5f61f054f49837345e0058b70565c16ae3e7733fcd2ed88bad0b3389c49c20",
+      "source_url": "https://github.com/typixdeck/diy-esp32s3-firmware/tree/5435cf004d43b7a16fd55034a348a5dbca6d069e",
+      "commit": "5435cf004d43b7a16fd55034a348a5dbca6d069e",
+      "layout": "factory 2 MiB · font 4 MiB · 8 MiB Flash",
+      "nvs_reset": true,
+      "capabilities": [
+        "组件连接拓扑",
+        "功耗历史曲线",
+        "Pi 配对只读共享",
+        "小乐器与时钟",
+        "实体键盘输入",
+        "Wi-Fi 与 NTP",
+        "背景及边框主题色",
+        "电量计初始化修正",
+        "连续满充判定",
+        "电量计只读诊断"
+      ],
+      "download_url": "typixdeck-diy/0.4.2/typixdeck-diy-0.4.2-full.bin",
+      "publisher": "自研",
+      "hardware_verified": false,
+      "chip": "esp32s3",
+      "board": "typixdeck",
+      "image_kind": "merged-image",
+      "flash_offset": 0
+    },
+    {
       "id": "typixdeck-diy-0.4.1",
       "version": "0.4.1",
       "title": "TypixDeck DIY",

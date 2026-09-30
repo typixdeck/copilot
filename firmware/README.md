@@ -16,16 +16,16 @@ firmware/
 └── typixdeck-diy/
     ├── 0.2.0/
     ├── 0.3.0/
-    └── 0.4.1/
-        ├── typixdeck-diy-0.4.1-full.bin
+    ├── 0.4.1/
+    └── 0.4.2/
+        ├── typixdeck-diy-0.4.2-full.bin
         ├── README.md
-        ├── screenshots/
         └── licenses/
 ```
 
 官方合并镜像已统一收录，版本说明及许可见 [typixdeck-official/](typixdeck-official/README.md)。Copilot 0.1.5 起官方下载使用此镜像；旧客户端仍能解析索引，官方条目不会重复出现。
 
-最新自研版本为 [DIY 0.4.1 预发布版](typixdeck-diy/0.4.1/README.md)，包含固件拓扑、主题色和小乐器预览、固定源码提交与硬件验收限制。0.3.0 / 0.2.0 保留原文件与哈希。
+最新自研版本为 [DIY 0.4.2 电量修正预发布版](typixdeck-diy/0.4.2/README.md)，包含 STC3117 初始化和满充判定，尚未完成真机验收。0.4.1 / 0.3.0 / 0.2.0 保留原文件与哈希。
 
 每个版本使用独立目录，不覆盖已发布 bin。新增固件时复制这个布局，把条目加入 `index.json` 的 `firmwares` 数组，再执行：
 
