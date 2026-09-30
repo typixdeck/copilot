@@ -1,0 +1,19 @@
+{
+  "kind": "host-framebuffer-preview",
+  "hardware_verified": false,
+  "host_sanitizers": "address,undefined",
+  "firmware_version": "0.4.3",
+  "fixtures": "Synthetic sensor, network, clock, audio and Raspberry Pi state. No hardware or network access.",
+  "renderers": {
+    "main/ui.c": "51c67bdab998a268d8e4cda33c27d067e393b112ef9a8bcebd6ba170a943b5e9",
+    "main/ttf_font.c": "4efc4ca5f2895bfc735ec33c1d1d44dfa4278c5d28b4bc31f92ff50893452ef8",
+    "main/builtin_apps.c": "3b5d4254a9b1e3e8f6677483b8c2b0b9f2b443a16f16ce891def38a529d20b16",
+    "main/builtin_apps.h": "c7612cf0fed6132a010ca6d9580e0266b43c9e22794ac61803aa173421f96b3d"
+  },
+  "images": [
+    "apps-dark.png",
+    "calculator-dark.png",
+    "calendar-dark.png",
+    "2048-dark.png"
+  ]
+}

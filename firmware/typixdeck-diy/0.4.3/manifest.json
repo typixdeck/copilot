@@ -1,0 +1,26 @@
+{
+  "version": "0.4.3",
+  "chip": "esp32s3",
+  "board": "TypixDeck 0720",
+  "hardware_verified": false,
+  "idf": "5.5.1",
+  "flash_settings": {
+    "flash_mode": "dio",
+    "flash_size": "8MB",
+    "flash_freq": "80m"
+  },
+  "source_commit": "b49ada77178e0caf5303141cb0decc6dc62b50b8",
+  "images": {
+    "typixdeck-diy-0.4.3-app.bin": {
+      "bytes": 1699520,
+      "sha256": "f973ff6a92c004b336969af018132fdedc885649dcf20536ee4b105bf5d9cdc4",
+      "offset": "0x10000"
+    },
+    "typixdeck-diy-0.4.3-full.bin": {
+      "bytes": 3997320,
+      "sha256": "9d0fdb7c7ce0001063bd451effbbd0c3b08b4230f7cbfc4244b8db183672a9f9",
+      "offset": "0x0"
+    }
+  },
+  "notice": "Prerelease; hardware validation pending. Full image overwrites NVS including preferences and Wi-Fi credentials. App-only requires matching partition/font layout. Built from source; no device data included."
+}
