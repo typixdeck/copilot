@@ -47,6 +47,8 @@ def _type_name(value):
 
 def sanitize_diagnostics(raw):
     result = {}
+    if type(raw.get('http_status')) is int and 100 <= raw['http_status'] <= 599:
+        result['http_status'] = raw['http_status']
     for key, limit in NUMBERS.items():
         if type(raw.get(key)) is int and 0 <= raw[key] <= limit:
             result[key] = raw[key]
@@ -77,7 +79,7 @@ def log_event(record):
     cleaned = sanitize_event(record)
     keys = ('phase', 'status', 'progress', 'elapsed_ms', 'code', 'failed_phase', 'backup_complete',
             'write_started', 'verified', 'reconnected', 'power_state_verified', 'boot_requested', 'audit_degraded',
-            *NUMBERS, 'awaiting_digest', 'error_type', 'cleanup_error_type', 'error_category', 'error_frames')
+            *NUMBERS, 'http_status', 'awaiting_digest', 'error_type', 'cleanup_error_type', 'error_category', 'error_frames')
     return {key: cleaned[key] for key in keys if key in cleaned}
 
 
@@ -170,6 +172,8 @@ def format_record_log(record, details=None):
         except (OSError, ValueError, OverflowError):
             rows.append('记录时间：不可用')
     rows.append('结果：' + event_message(record))
+    if 'http_status' in record:
+        rows.append(f"HTTP 状态码：{record['http_status']}")
     if 'elapsed_ms' in record:
         rows.append('已用时间：' + _seconds(record['elapsed_ms']))
     if 'image_sha256' in record:

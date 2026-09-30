@@ -35,9 +35,34 @@ HTTP_TIMEOUT = 10
 DOWNLOAD_DEADLINE = 120
 FREE_SPACE_RESERVE = 1024 * 1024
 
+CACHE_ERROR_TEXT = {
+    "download-timeout": "固件下载超时，请检查网络后重试",
+    "download-dns": "无法解析固件服务器地址，请检查网络或 DNS",
+    "download-tls": "固件服务器证书验证失败，请检查系统时间和网络",
+    "download-network": "无法连接或读取固件服务器，请检查网络后重试",
+    "download-http": "固件服务器返回 HTTP 错误，请查看日志中的状态码",
+    "download-redirect": "固件来源发生重定向，已停止下载",
+    "download-response": "下载响应大小或编码与固件清单不一致",
+    "download-size": "下载文件大小与固件清单不一致",
+    "download-incomplete": "固件下载不完整，请检查网络后重试",
+    "download-hash": "下载文件 SHA-256 不匹配，未更新缓存",
+    "cache-validation": "固件大小、SHA-256 或镜像结构校验失败，未更新缓存",
+    "cache-space": "存储空间不足，请释放空间后重试",
+    "cache-permission": "无法访问固件缓存，请检查文件权限",
+    "cache-io": "无法读取或保存固件缓存，请检查存储状态",
+}
+
 
 class CacheError(Exception):
     """An artifact could not be safely obtained or verified."""
+
+    def __init__(self, message="", *, code="cache_failed", http_status=None):
+        # UI/logs receive only reviewed codes and bounded HTTP numbers, never
+        # exception messages, URLs, headers, credentials or local file paths.
+        self.code = code if code in CACHE_ERROR_TEXT else "cache_failed"
+        self.http_status = (http_status if self.code == "download-http"
+                            and type(http_status) is int and 100 <= http_status <= 599 else None)
+        super().__init__(message or CACHE_ERROR_TEXT.get(self.code, "固件准备失败"))
 
 
 class Cancelled(CacheError):
@@ -48,13 +73,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if fp is not None:
             fp.close()
-        raise CacheError("固件来源发生重定向，已停止下载。")
+        raise CacheError(code="download-redirect")
 
 
 def _open_https(request, *, timeout):
-    # No environment proxy, cookies, authorization, or certificate override.
+    # Honor the user's desktop HTTP(S)_PROXY / NO_PROXY configuration. HTTPS
+    # still verifies the origin certificate through CONNECT; a proxy cannot
+    # replace catalog signatures or artifact hashes. Never log proxy settings.
     opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), _NoRedirect(),
+        urllib.request.ProxyHandler(), _NoRedirect(),
         urllib.request.HTTPSHandler(context=ssl.create_default_context()),
     )
     return opener.open(request, timeout=timeout)
@@ -66,13 +93,25 @@ def _check_cancel(cancel):
 
 
 def _io_error(exc):
+    network = isinstance(exc, (urllib.error.URLError, http.client.HTTPException))
     if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
         exc = exc.reason
     if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
-        return CacheError("存储空间不足，请释放空间后重试。")
+        return CacheError(code="cache-space")
+    if isinstance(exc, ssl.SSLError):
+        return CacheError(code="download-tls")
+    if isinstance(exc, socket.gaierror):
+        return CacheError(code="download-dns")
     if isinstance(exc, (TimeoutError, socket.timeout)):
-        return CacheError("下载超时，请检查网络后重试。")
-    return CacheError("无法读取或保存固件，请检查网络、文件权限和存储空间。")
+        return CacheError(code="download-timeout")
+    if isinstance(exc, http.client.IncompleteRead):
+        return CacheError(code="download-incomplete")
+    if isinstance(exc, PermissionError):
+        return CacheError(code="cache-permission")
+    if network or isinstance(exc, ConnectionError) or (isinstance(exc, OSError) and exc.errno in (
+            errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.ECONNABORTED)):
+        return CacheError(code="download-network")
+    return CacheError(code="cache-io")
 
 
 def _known(firmware: Firmware) -> str:
@@ -366,7 +405,7 @@ class ArtifactCache:
     def _space(descriptor, size):
         info = os.fstatvfs(descriptor)
         if info.f_bavail * info.f_frsize < size + FREE_SPACE_RESERVE:
-            raise CacheError("存储空间不足，请释放空间后重试。")
+            raise CacheError(code="cache-space")
 
     @contextmanager
     def _stage(self, descriptor):
@@ -385,7 +424,7 @@ class ArtifactCache:
         output.flush()
         os.fsync(output.fileno())
         if not self._valid(descriptor, stage_name, firmware):
-            raise CacheError("固件大小、SHA-256 或镜像结构校验失败，未更新缓存。")
+            raise CacheError(code="cache-validation")
         staged = self._entry(descriptor, stage_name)
         if staged is None or self._identity(os.fstat(output.fileno())) != self._identity(staged):
             raise CacheError("临时文件已变化，请重试。")
@@ -430,12 +469,12 @@ class ArtifactCache:
                 deadline = time.monotonic() + DOWNLOAD_DEADLINE
                 with self._opener(request, timeout=HTTP_TIMEOUT) as response:
                     if response.getcode() != 200 or response.geturl() != url:
-                        raise CacheError("固件来源响应异常，已停止下载。")
+                        raise CacheError(code="download-response")
                     length = response.headers.get("Content-Length")
                     encoding = response.headers.get("Content-Encoding", "identity")
                     if (encoding.lower() != "identity" or length is not None and (
                             not re.fullmatch(r"[0-9]+", length) or int(length) != firmware.size)):
-                        raise CacheError("下载响应大小或编码与固件清单不一致。")
+                        raise CacheError(code="download-response")
                     with self._stage(descriptor) as (name, output):
                         received = 0
                         digest = hashlib.sha256()
@@ -446,29 +485,31 @@ class ArtifactCache:
                         while True:
                             _check_cancel(cancel)
                             if time.monotonic() >= deadline:
-                                raise CacheError("下载超时，请检查网络后重试。")
+                                raise CacheError(code="download-timeout")
                             chunk = read_chunk(min(CHUNK_BYTES, firmware.size - received + 1))
                             _check_cancel(cancel)
                             if time.monotonic() >= deadline:
-                                raise CacheError("下载超时，请检查网络后重试。")
+                                raise CacheError(code="download-timeout")
                             if not chunk:
                                 break
                             received += len(chunk)
                             if received > firmware.size:
-                                raise CacheError("下载超过清单文件大小，已停止。")
+                                raise CacheError(code="download-size")
                             output.write(chunk)
                             digest.update(chunk)
                             if progress:
                                 progress(received, firmware.size)
-                        if received != firmware.size or digest.hexdigest() != firmware.sha256:
-                            raise CacheError("下载不完整或 SHA-256 不匹配，未更新缓存。")
+                        if received != firmware.size:
+                            raise CacheError(code="download-incomplete")
+                        if digest.hexdigest() != firmware.sha256:
+                            raise CacheError(code="download-hash")
                         return self._commit(descriptor, name, output, firmware, cancel)
         except CacheError:
             raise
         except urllib.error.HTTPError as exc:
             exc.close()
             _check_cancel(cancel)
-            raise CacheError(f"固件来源暂不可用（HTTP {exc.code}），请稍后重试。") from None
+            raise CacheError(code="download-http", http_status=exc.code) from None
         except (OSError, urllib.error.URLError, http.client.HTTPException) as exc:
             _check_cancel(cancel)
             raise _io_error(exc) from None

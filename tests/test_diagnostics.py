@@ -220,6 +220,16 @@ class LogValidationAndFormattingTests(unittest.TestCase):
     def setUp(self):
         self.record = failed_record()
 
+    def test_http_status_is_bounded_without_response_text(self):
+        self.assertEqual(sanitize_diagnostics({"http_status": 429}), {"http_status": 429})
+        for invalid in (-1, 0, 99, 600, True, "403", 403.0, "PRIVATE"):
+            self.assertNotIn("http_status", sanitize_diagnostics({"http_status": invalid}))
+        record = failed_record(code="download-http", failed_phase="prepare", http_status=503,
+                               response_body="PRIVATE", response_headers="PRIVATE")
+        text = format_record_log(record)
+        self.assertIn("HTTP 状态码：503", text)
+        self.assertNotIn("PRIVATE", text)
+
     def test_old_02_record_shows_backup_address_and_safe_stack_without_invented_timeline(self):
         record = failed_record(version="0.2.0")
         for key in ("image_sha256", "image_size", "started_at", "elapsed_ms", "error_category"):

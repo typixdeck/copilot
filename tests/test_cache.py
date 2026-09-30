@@ -42,6 +42,21 @@ class Response(io.BytesIO):
 
 
 class OfficialMirrorTests(unittest.TestCase):
+    def test_released_diy_041_download_structure_proof_and_offline_reuse(self):
+        from typix_copilot.authority import bundled_catalog
+        root = Path(__file__).resolve().parents[1]
+        firmware = next(fw for fw in bundled_catalog() if fw.id == "typixdeck-diy-0.4.1")
+        data = (root / "firmware/typixdeck-diy/0.4.1" / firmware.filename).read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ArtifactCache(Path(directory).resolve() / "cache")
+            cache._opener = Mock(side_effect=lambda req, **kw: Response(
+                data, req.full_url, headers={"Content-Length": str(len(data))}))
+            target = cache.ensure(firmware)
+            self.assertEqual(target.read_bytes(), data)
+            self.assertTrue(cache.restore_authorization(firmware))
+            cache._opener = Mock(side_effect=AssertionError("Cache must remain offline"))
+            self.assertEqual(cache.ensure(firmware), target)
+
     def test_all_pinned_downloads_match_the_public_mirror_index(self):
         from typix_copilot.registry import parse_catalog, REGISTRY_BASE
         root = Path(__file__).resolve().parents[1]
@@ -68,6 +83,29 @@ class OfficialMirrorTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), data)
             cache._opener = Mock(side_effect=AssertionError("Verified cache must remain offline"))
             self.assertEqual(cache.ensure(firmware), target)
+
+
+class DesktopProxyTests(unittest.TestCase):
+    def test_configured_proxy_tunnels_origin_and_no_proxy_keeps_direct_routing(self):
+        url = "https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/index.json"
+        for bypass in (False, True):
+            with self.subTest(bypass=bypass):
+                seen = []
+                def https_open(handler, request):
+                    seen.append((request.host, request._tunnel_host, request.full_url,
+                                 handler._context.verify_mode, handler._context.check_hostname))
+                    response = Response(b"fixture", url)
+                    response.code, response.msg = 200, "OK"
+                    response.info = lambda: response.headers
+                    return response
+                env = {"https_proxy": "http://127.0.0.1:7890", "no_proxy": "*" if bypass else ""}
+                with patch.dict(os.environ, env, clear=True), patch.object(
+                        urllib.request.HTTPSHandler, "https_open", https_open):
+                    with module._open_https(urllib.request.Request(url), timeout=10) as response:
+                        self.assertEqual(response.read(), b"fixture")
+                self.assertEqual(seen, [("raw.githubusercontent.com" if bypass else "127.0.0.1:7890",
+                                       None if bypass else "raw.githubusercontent.com", url,
+                                       ssl.CERT_REQUIRED, True)])
 
 
 class CacheTests(unittest.TestCase):
@@ -226,6 +264,37 @@ class CacheTests(unittest.TestCase):
                 self.cache.ensure(self.firmware)
         self.assertFalse(self.target.exists())
         self.assert_no_partial()
+
+    def test_typed_network_storage_and_integrity_failures_are_distinct(self):
+        errors = [
+            (urllib.error.HTTPError(self.url, 404, "PRIVATE", {}, None), "download-http"),
+            (urllib.error.URLError("PRIVATE"), "download-network"),
+            (urllib.error.URLError(socket.gaierror(-2, "PRIVATE")), "download-dns"),
+            (urllib.error.URLError(ssl.SSLCertVerificationError("PRIVATE")), "download-tls"),
+            (socket.timeout("PRIVATE"), "download-timeout"),
+            (ConnectionResetError("PRIVATE"), "download-network"),
+            (OSError(errno.ENOSPC, "PRIVATE"), "cache-space"),
+            (PermissionError("PRIVATE"), "cache-permission"),
+            (OSError(errno.EIO, "PRIVATE"), "cache-io"),
+        ]
+        for error, code in errors:
+            self.cache._opener = Mock(side_effect=error)
+            with self.subTest(code=code), self.assertRaises(CacheError) as raised:
+                self.cache.ensure(self.firmware)
+            self.assertEqual(raised.exception.code, code)
+            self.assertNotIn("PRIVATE", str(raised.exception))
+            self.assertEqual(raised.exception.http_status, 404 if code == "download-http" else None)
+            self.assertFalse(self.target.exists())
+            self.assert_no_partial()
+        for data, code in [(self.data[:-1], "download-incomplete"),
+                           (self.data + b"x", "download-size"),
+                           (b"x" + self.data[1:], "download-hash")]:
+            self.cache._opener = Mock(return_value=Response(data, self.url))
+            with self.subTest(code=code), self.assertRaises(CacheError) as raised:
+                self.cache.ensure(self.firmware)
+            self.assertEqual(raised.exception.code, code)
+            self.assertFalse(self.target.exists())
+            self.assert_no_partial()
 
     def test_low_space_and_late_enospc_do_not_publish(self):
         with patch.object(module.os, "fstatvfs", return_value=SimpleNamespace(f_bavail=1, f_frsize=1)):
@@ -430,7 +499,8 @@ class RegistryArtifactTests(unittest.TestCase):
 class TransportTests(unittest.TestCase):
     def test_default_transport_requires_tls_and_rejects_redirects(self):
         request = urllib.request.Request("https://raw.githubusercontent.com/example")
-        with patch.object(module.urllib.request, "build_opener") as factory:
+        with patch.object(module.urllib.request, "getproxies", return_value={}), patch.object(
+                module.urllib.request, "build_opener") as factory:
             module._open_https(request, timeout=10)
         handlers = factory.call_args.args
         self.assertEqual(handlers[0].proxies, {})

@@ -20,7 +20,7 @@ import threading
 import unicodedata
 
 from .authority import authorize_firmware, encode_authorization
-from .cache import ArtifactCache, CacheError, Cancelled
+from .cache import ArtifactCache, CacheError, Cancelled, CACHE_ERROR_TEXT
 from .core import Firmware, MAX_IMAGE_BYTES
 from .diagnostics import sanitize_diagnostics
 
@@ -36,6 +36,7 @@ PHASE_TEXT = {"prepare": "准备并校验固件", "authorize": "等待系统授�
               "connect": "连接板载协处理器", "backup": "备份当前固件", "write": "正在写入",
               "verify": "校验写入内容", "restart": "等待设备重新连接", "complete": "写入已校验，设备已重新连接"}
 ERROR_TEXT = {
+    **CACHE_ERROR_TEXT,
     "commissioning-denied": "未取得供电查询回复，需要首次升级授权",
     "rom-recovery-required": "首次升级尚未恢复运行，需要单独恢复处理",
     "cancelled": "已取消，尚未请求写入", "cache_failed": "固件下载或文件校验失败",
@@ -289,8 +290,8 @@ class LiveController:
                 restore(firmware)
             firmware = authorize_firmware(firmware)
             authorization = encode_authorization(firmware)
-        except CacheError:
-            raise LiveError("cache_failed") from None
+        except CacheError as exc:
+            raise LiveError(exc.code) from None
         except ValueError:
             raise LiveError("unsupported_firmware") from None
         if not self._lock.acquire(blocking=False):
@@ -381,10 +382,14 @@ class LiveController:
             self._emit(result, on_event)
             return result
         except (Cancelled, CacheError, LiveError) as exc:
-            code = "cancelled" if isinstance(exc, Cancelled) else "cache_failed" if isinstance(exc, CacheError) else exc.code
+            code = "cancelled" if isinstance(exc, Cancelled) else exc.code
             uncertain = code == "ongoing" or child is not None and child.poll() is None
             result = self._base(firmware, "failed", "failed", code=code, uncertain=uncertain,
                                 progress=self.last["progress"], **flags)
+            if isinstance(exc, CacheError) and not isinstance(exc, Cancelled):
+                result["failed_phase"] = "prepare"
+                if exc.http_status is not None:
+                    result["http_status"] = exc.http_status
             if code == "ongoing":
                 for key in ("firmware_id", "version", "image_sha256", "image_size"):
                     result.pop(key, None)

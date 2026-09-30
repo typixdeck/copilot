@@ -2,7 +2,7 @@
 
 TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry Pi 主系统上，通过 Launcher 全屏启动。
 
-**0.2.4 预发布版：更新 ESP32-S3 RAM 维护程序**，引入 Espressif 的 USB 满包结束修复，等待维护模式期间保持 CDC 连接，并拒绝复用版本未知的残留 RAM 程序。已通过软件测试，尚未完成 CM4 完整备份/写入/回读验收。包含 DIY 0.4.1 的签名在线和离线目录。写入记录继续支持展开详细日志与复制。
+**0.2.5：修正代理与下载错误提示**。固件目录和下载遵循桌面的 HTTP/HTTPS 代理及 NO_PROXY 配置，继续验证 TLS、签名、SHA-256 和镜像结构。界面与日志区分 DNS、TLS、超时、HTTP 状态、存储及哈希错误。182 项测试通过；CM4 已升级并通过网络下载、完整校验和离线复用 DIY 0.4.1 的实测。完整刷写流程仍处于预发布验收阶段。
 
 所有目录固件统一「写入」。选择版本后点击写入，确认后自动复用缓存或下载校验，继续系统授权与写入。无需单独下载。启动时验证本仓库的签名固件目录，离线时使用已验证缓存或随包目录。
 
@@ -32,7 +32,7 @@ TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry P
 
 ```sh
 python3 tools/build-deb.py
-sudo apt install ./dist/typix-copilot_0.2.4-1_arm64.deb
+sudo apt install ./dist/typix-copilot_0.2.5-1_arm64.deb
 install -m 644 /usr/share/applications/typix-copilot.desktop ~/Desktop/typix-copilot.desktop
 ```
 

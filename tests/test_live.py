@@ -9,6 +9,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+import socket
+import ssl
+import urllib.error
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -185,7 +188,7 @@ class ControllerTests(unittest.TestCase):
     def test_cache_corruption_cache_failure_and_missing_helper_are_not_write_success(self):
         self.cache._opener = Mock(side_effect=OSError("offline"))
         result = self.controller.run_write(self.firmware)
-        self.assertEqual(result["code"], "cache_failed")
+        self.assertEqual(result["code"], "cache-io")
         self.spawn.assert_not_called()
         wrong = self.root / "wrong.bin"
         wrong.write_bytes(b"x" * self.firmware.size)
@@ -196,6 +199,33 @@ class ControllerTests(unittest.TestCase):
         self.cache._opener = Mock(side_effect=lambda request, **kwargs: Response(self.bytes, request.full_url))
         self.spawn.side_effect = FileNotFoundError()
         self.assertEqual(self.controller.run_write(self.firmware)["code"], "helper_missing")
+
+    def test_download_errors_reach_ui_and_log_without_spawning_writer_or_leaking_text(self):
+        from typix_copilot.diagnostics import format_record_log, log_event
+        failures = [
+            (urllib.error.HTTPError("https://PRIVATE", 403, "PRIVATE", {}, None), "download-http"),
+            (urllib.error.URLError(socket.gaierror(-2, "PRIVATE")), "download-dns"),
+            (ssl.SSLCertVerificationError("PRIVATE"), "download-tls"),
+            (socket.timeout("PRIVATE"), "download-timeout"),
+            (cache_module.CacheError("PRIVATE", code="not-trusted"), "cache_failed"),
+        ]
+        for failure, code in failures:
+            with self.subTest(code=code):
+                self.cache._opener = Mock(side_effect=failure)
+                result = self.controller.run_write(self.firmware)
+                self.assertEqual(result["code"], code)
+                self.assertEqual(result["failed_phase"], "prepare")
+                self.assertFalse(result["write_started"])
+                self.assertFalse(self.controller.busy)
+                self.assertNotIn("PRIVATE", live.event_message(result))
+                text = format_record_log(result)
+                self.assertIn(live.ERROR_TEXT[code], text)
+                self.assertNotIn("PRIVATE", text)
+                self.assertEqual(log_event(result)["code"], code)
+                if code == "download-http":
+                    self.assertIn("HTTP 状态码：403", text)
+                    self.assertEqual(log_event(result)["http_status"], 403)
+                self.spawn.assert_not_called()
 
     def test_unsupported_target_busy_and_existing_running_record_reject_new_work(self):
         with self.assertRaises(live.LiveError):
