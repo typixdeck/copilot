@@ -1,4 +1,4 @@
-# DIY 0.4.4 本地候选
+# DIY 0.4.4 预发布版
 
 树莓派状态和协作控制优先通过 USB CDC，原端口断线自动重连；文件和截图继续使用配对 HTTPS。保留计算器、日历、2048、MIDI、时钟。首次 Wi-Fi 默认开启，时区 UTC+8，后续遵循保存的设置，无私人默认凭据。
 
@@ -8,4 +8,4 @@
 
 镜像 typixdeck-diy-0.4.4-full.bin，3997320 字节，SHA256 `4894ceb3ae6ff01af5fb69a409d4b8726d8624a489be929bbce0a05902f5287b`。来源提交 `3aa0be1afec814664eaeb31057812829a859da20`；8 MiB Flash，factory 2 MiB / font 4 MiB，分区未改。
 
-本地 ASan/UBSan、宿主协议与回读事务检查及 ESP-IDF 5.5.1 离线构建通过；本环境拒绝 SSH 和本地 HTTPS socket bind，真实 Wi-Fi/刷写后设置留存与长期运行未验收，`hardware_verified=false`，尚未发布。许可见 [licenses/](licenses/)。
+2026-10-01 已发布。本地 ASan/UBSan、完整宿主检查（含本地 HTTPS 服务）、Copilot 205 个测试、宿主协议与回读事务检查及 ESP-IDF 5.5.1 离线构建通过；真实 Wi-Fi/刷写后设置留存与长期运行未验收，`hardware_verified=false`。许可见 [licenses/](licenses/)。

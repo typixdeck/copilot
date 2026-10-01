@@ -8,7 +8,7 @@ TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry P
 
 已镜像官方 2026-09-10、2026-08-21、2026-08-15、2026-08-14 四个版本，保留原文件及固定哈希。官方条目和 DIY 均从本仓库 `firmware/` 下载，原有缓存直接复用。来源与版本清单见 [官方固件目录](firmware/typixdeck-official/README.md)。
 
-本地已加入 [DIY 0.4.4 串口优先与保留设置候选](firmware/typixdeck-diy/0.4.4/README.md)，需要本版 v2 目录；尚未上传或真机验收。
+已发布 [DIY 0.4.4 串口优先与保留设置预发布版](firmware/typixdeck-diy/0.4.4/README.md)，需要本版 v2 目录；尚未真机验收。[下载 Copilot 0.2.6](https://github.com/typixdeck/copilot/releases/tag/v0.2.6)。
 
 已收录 [DIY 0.4.3 内置应用预发布版](firmware/typixdeck-diy/0.4.3/README.md)：新增计算器、日历和 2048，支持触摸与实体键盘，保留 MIDI、时钟及电量修正。宿主测试和构建已验证，真机验收待完成；刷新签名目录即可发起写入，仍执行完整板级检查。历史版本保留原文件与哈希。
 
