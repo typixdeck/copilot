@@ -455,7 +455,7 @@ class RegistryArtifactTests(unittest.TestCase):
                    size=len(self.data), sha256=hashlib.sha256(self.data).hexdigest(),
                    source_url="https://github.com/typixdeck/copilot/tree/main/firmware/test",
                    commit="", download_url="test/TEST_ONLY.bin")
-        self.firmware = parse_catalog(json.dumps({"schema": 1, "firmwares": [row]}).encode())[0]
+        self.firmware = parse_catalog(json.dumps({"schema": 2, "firmwares": [row]}).encode())[0]
         self.cache = ArtifactCache(self.root / "cache")
         self.opener = Mock(side_effect=lambda req, **kw: Response(
             self.data, self.firmware.download_url, headers={"Content-Length": str(len(self.data))}))

@@ -31,11 +31,16 @@ STATUS_PATH = Path("/var/lib/typix-copilot/status.json")
 MAX_EVENT_BYTES = 8192
 MAX_STREAM_BYTES = 1024 * 1024
 PHASES = frozenset({"prepare", "authorize", "enter", "connect", "backup", "write", "verify", "restart", "complete", "failed"})
-FLAGS = ("backup_complete", "write_started", "verified", "reconnected", "runtime_version_confirmed", "audit_degraded", "exception_used", "power_state_verified")
+FLAGS = ("backup_complete", "write_started", "verified", "reconnected", "runtime_version_confirmed", "audit_degraded", "exception_used", "power_state_verified", "settings_preserved", "companion_resume_deferred")
 PHASE_TEXT = {"prepare": "准备并校验固件", "authorize": "等待系统授权", "enter": "进入维护模式",
               "connect": "连接板载协处理器", "backup": "备份当前固件", "write": "正在写入",
               "verify": "校验写入内容", "restart": "等待设备重新连接", "complete": "写入已校验，设备已重新连接"}
 ERROR_TEXT = {
+    "settings-policy": "此固件的设置保留授权无效，未执行写入",
+    "settings-layout": "现有分区与保留设置要求不一致，未执行写入",
+    "settings-image-data": "镜像设置区不是空白，未执行写入",
+    "settings-source": "现有固件未在设置兼容列表中，未执行写入",
+    "companion-stop": "无法暂停串口通信服务，未执行写入",
     **CACHE_ERROR_TEXT,
     "commissioning-denied": "未取得供电查询回复，需要首次升级授权",
     "rom-recovery-required": "首次升级尚未恢复运行，需要单独恢复处理",
@@ -79,8 +84,17 @@ def event_message(event):
         base = ERROR_TEXT.get(event.get("code"), "写入未完成")
         if event.get("write_started"):
             base += "；需要恢复，请保留备份"
+        elif event.get("boot_requested") and not event.get("reconnected"):
+            base += "；设备可能仍在维护模式，需要恢复，请保留备份"
+        if event.get("companion_resume_deferred"):
+            base += "；串口服务待设备恢复后重启"
         return base + ("；维护记录保存不完整" if event.get("audit_degraded") else "")
-    return PHASE_TEXT.get(event["phase"], "等待维护状态") + ("；维护记录保存不完整" if event.get("audit_degraded") else "")
+    text = PHASE_TEXT.get(event["phase"], "等待维护状态")
+    if event["phase"] == "complete" and event.get("settings_preserved"):
+        text += "；已保留设备设置"
+    if event.get("companion_resume_deferred"):
+        text += "；串口服务待设备恢复后重启"
+    return text + ("；维护记录保存不完整" if event.get("audit_degraded") else "")
 
 
 def sanitize_event(raw, firmware=None):

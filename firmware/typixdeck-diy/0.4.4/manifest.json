@@ -1,0 +1,26 @@
+{
+  "version": "0.4.4",
+  "chip": "esp32s3",
+  "board": "TypixDeck 0720",
+  "hardware_verified": false,
+  "idf": "5.5.1",
+  "flash_settings": {
+    "flash_mode": "dio",
+    "flash_size": "8MB",
+    "flash_freq": "80m"
+  },
+  "source_commit": "3aa0be1afec814664eaeb31057812829a859da20",
+  "images": {
+    "typixdeck-diy-0.4.4-app.bin": {
+      "bytes": 1699984,
+      "sha256": "dc9a73c98e8c626f6c64899139e9a004ab0cdec19f5b7d35af1b2c362a1455f5",
+      "offset": "0x10000"
+    },
+    "typixdeck-diy-0.4.4-full.bin": {
+      "bytes": 3997320,
+      "sha256": "4894ceb3ae6ff01af5fb69a409d4b8726d8624a489be929bbce0a05902f5287b",
+      "offset": "0x0"
+    }
+  },
+  "notice": "Prerelease; hardware validation pending. Direct full-image writes overwrite NVS including preferences and Wi-Fi credentials. Copilot >=0.2.6 preserves NVS only with a signed preserve-diy-v1 policy, identical partition sector and compatible source app hash. App-only requires matching partition/font layout. Built from source; no device data included."
+}

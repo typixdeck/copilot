@@ -25,19 +25,41 @@ from .cache import ArtifactCache, CacheError, Cancelled, _check_cancel, _io_erro
 
 
 REGISTRY_BASE = "https://raw.githubusercontent.com/typixdeck/copilot/main/firmware/"
-REGISTRY_URL = REGISTRY_BASE + "index.json"
-SIGNATURE_URL = REGISTRY_BASE + "index.json.sig"
+REGISTRY_URL = REGISTRY_BASE + "index-v2.json"
+SIGNATURE_URL = REGISTRY_BASE + "index-v2.json.sig"
 MAX_INDEX_BYTES = 256 * 1024
 MAX_FIRMWARES = 100
 HTTP_TIMEOUT = 10
 FETCH_DEADLINE = 30
-SNAPSHOT_NAME = "firmware-index.signed"
+SNAPSHOT_NAME = "firmware-index-v2.signed"
 _BASE_FIELDS = {
     "id", "version", "title", "summary", "filename", "size", "sha256",
     "source_url", "commit", "layout", "nvs_reset", "capabilities",
 }
 _REQUIRED = _BASE_FIELDS | {"download_url", "chip", "board", "image_kind", "flash_offset"}
 _ALLOWED = {field.name for field in fields(Firmware)}
+_SETTINGS_FIELDS = {"settings_policy", "settings_compatible_apps"}
+
+
+def validate_settings_policy(firmware):
+    """A signed, exact app allowlist, never a broad board/layout heuristic."""
+    apps = firmware.settings_compatible_apps
+    if (not isinstance(apps, tuple) or len(apps) > 32
+            or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item) for item in apps)
+            or len(set(apps)) != len(apps)):
+        raise RegistryError("设置兼容性摘要列表无效。")
+    if firmware.settings_policy == "reset":
+        if apps:
+            raise RegistryError("重置设置的固件不能声明保留列表。")
+    elif firmware.settings_policy == "preserve-diy-v1":
+        source = urllib.parse.urlsplit(firmware.source_url)
+        if (not apps or firmware.nvs_reset is not False
+                or not firmware.id.startswith("typixdeck-diy-")
+                or not source.path.startswith("/typixdeck/diy-esp32s3-firmware/")
+                or source.netloc != "github.com" or source.scheme != "https"):
+            raise RegistryError("保留设置仅支持明确签名授权的 DIY 设置版本。")
+    else:
+        raise RegistryError("不支持此设置保留策略。")
 
 
 class RegistryError(CacheError):
@@ -109,6 +131,7 @@ def validate_registry_firmware(firmware: Firmware) -> str:
     for capability in firmware.capabilities:
         _text(capability, "capabilities", 80)
     _validate_source(firmware.source_url)
+    validate_settings_policy(firmware)
     url = _binary_url(firmware.download_url, firmware.filename)
     for pinned in load_catalog():
         if firmware.id == pinned.id and any(
@@ -142,7 +165,7 @@ def parse_catalog(data: bytes) -> list[Firmware]:
     except (UnicodeError, ValueError, RecursionError):
         raise RegistryError("固件目录不是有效的 UTF-8 JSON。") from None
     if (not isinstance(document, dict) or set(document) != {"schema", "firmwares"}
-            or type(document["schema"]) is not int or document["schema"] != 1
+            or type(document["schema"]) is not int or document["schema"] not in (1, 2)
             or not isinstance(document["firmwares"], list)
             or len(document["firmwares"]) > MAX_FIRMWARES):
         raise RegistryError("固件目录版本、字段或条目数量不受支持。")
@@ -152,7 +175,14 @@ def parse_catalog(data: bytes) -> list[Firmware]:
         if (not isinstance(row, dict) or not _REQUIRED.issubset(row)
                 or set(row) - _ALLOWED or not isinstance(row["capabilities"], list)):
             raise RegistryError("固件目录条目字段不完整或不受支持。")
-        firmware = Firmware(**{**row, "capabilities": tuple(row["capabilities"])})
+        if document["schema"] == 1 and set(row) & _SETTINGS_FIELDS:
+            raise RegistryError("设置保留需要第二版目录及新版 Copilot。")
+        values = {**row, "capabilities": tuple(row["capabilities"])}
+        if "settings_compatible_apps" in row:
+            if not isinstance(row["settings_compatible_apps"], list):
+                raise RegistryError("设置兼容性摘要列表无效。")
+            values["settings_compatible_apps"] = tuple(row["settings_compatible_apps"])
+        firmware = Firmware(**values)
         url = validate_registry_firmware(firmware)
         firmware = Firmware(**{**asdict(firmware), "download_url": url})
         if firmware.id in seen:

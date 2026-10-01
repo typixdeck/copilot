@@ -65,8 +65,8 @@ def verify_catalog(raw: bytes, signature: bytes):
 
 def bundled_catalog():
     directory = Path(__file__).parent
-    return _canonical(verify_catalog((directory / "firmware-index.json").read_bytes(),
-                                    (directory / "firmware-index.json.sig").read_bytes()))
+    return _canonical(verify_catalog((directory / "firmware-index-v2.json").read_bytes(),
+                                    (directory / "firmware-index-v2.json.sig").read_bytes()))
 
 
 def decode_catalog(frame: bytes, *, canonical=True):

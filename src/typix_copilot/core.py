@@ -41,6 +41,10 @@ class Firmware:
     board: str = "typixdeck"
     image_kind: str = "merged-image"
     flash_offset: int = 0
+    # Only v2 signed catalogs may grant settings preservation. Old catalog
+    # entries retain full-image reset semantics.
+    settings_policy: str = "reset"
+    settings_compatible_apps: tuple[str, ...] = ()
 
 
 def load_catalog() -> list[Firmware]:

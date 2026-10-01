@@ -28,7 +28,7 @@ NUMBERS = {'started_at': 2**40, 'elapsed_ms': MAX_ELAPSED_MS,
            'read_bytes': 16*1024*1024, 'read_total_bytes': 16*1024*1024,
            'backup_bytes': 16*1024*1024, 'verified_bytes': 16*1024*1024,
            'flash_capacity': 16*1024*1024, 'error_errno': 4096}
-NUMBERS.update(chunk_received_bytes=65536, chunk_requested_bytes=65536,
+NUMBERS.update(preserved_bytes=0x6000, chunk_received_bytes=65536, chunk_requested_bytes=65536,
                last_packet_elapsed_ms=MAX_ELAPSED_MS)
 
 
@@ -79,6 +79,7 @@ def log_event(record):
     cleaned = sanitize_event(record)
     keys = ('phase', 'status', 'progress', 'elapsed_ms', 'code', 'failed_phase', 'backup_complete',
             'write_started', 'verified', 'reconnected', 'power_state_verified', 'boot_requested', 'audit_degraded',
+            'settings_preserved', 'companion_resume_deferred',
             *NUMBERS, 'http_status', 'awaiting_digest', 'error_type', 'cleanup_error_type', 'error_category', 'error_frames')
     return {key: cleaned[key] for key in keys if key in cleaned}
 
@@ -184,6 +185,10 @@ def format_record_log(record, details=None):
     rows.append('实际写入：' + ('已开始' if record['write_started'] else '未开始'))
     rows.append('回读校验：' + ('通过' if record['verified'] else '未确认'))
     rows.append('重新连接：' + ('已确认' if record['reconnected'] else '未确认'))
+    if record.get('settings_preserved'):
+        rows.append('设备设置：已保留，包含在完整回读校验中')
+    if record.get('companion_resume_deferred'):
+        rows.append('串口通信服务：待设备恢复正常运行后重启')
     if record.get('failed_phase') in PHASE_NAMES:
         rows.append('失败阶段：' + PHASE_NAMES[record['failed_phase']])
     if 'attempted_offset' in record:

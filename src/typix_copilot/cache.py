@@ -246,7 +246,13 @@ class ArtifactCache:
 
     @staticmethod
     def _proof_name(firmware):
-        identity = json.dumps(asdict(firmware), sort_keys=True, ensure_ascii=True,
+        fields = asdict(firmware)
+        if firmware.settings_policy == "reset" and not firmware.settings_compatible_apps:
+            # Keep 0.2.5's exact proof identity for already cached signed v1
+            # entries. Preservation grants add their new policy to the identity.
+            fields.pop("settings_policy")
+            fields.pop("settings_compatible_apps")
+        identity = json.dumps(fields, sort_keys=True, ensure_ascii=True,
                               separators=(",", ":")).encode("ascii")
         return firmware.sha256 + "." + hashlib.sha256(identity).hexdigest() + ".proof"
 

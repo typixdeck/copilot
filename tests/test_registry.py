@@ -35,7 +35,7 @@ def row():
 
 
 def document(rows=None):
-    return json.dumps({"schema": 1, "firmwares": [row()] if rows is None else rows},
+    return json.dumps({"schema": 2, "firmwares": [row()] if rows is None else rows},
                       ensure_ascii=False).encode("utf-8")
 
 
@@ -55,7 +55,7 @@ class SchemaTests(unittest.TestCase):
         missing = row()
         missing.pop("sha256")
         documents = [document([modified]), document([missing]), b'{"schema":1,"schema":1,"firmwares":[]}',
-                     b'{"schema":true,"firmwares":[]}', b'{"schema":2,"firmwares":[]}',
+                     b'{"schema":true,"firmwares":[]}', b'{"schema":3,"firmwares":[]}',
                      b'{"schema":1,"firmwares":[],"port":"/dev/ttyUSB0"}', b'{"schema":1,"firmwares":NaN}',
                      b'{"schema":1,"firmwares":null}', b'{"schema":1,"firmwares":[{"id":"a","id":"b"}]}',
                      b'[]', b'\xff', b'[' * 1500]
@@ -204,7 +204,7 @@ class RegistryTests(unittest.TestCase):
             (self.data, self.signature + b"x"),
             (self.data, Ed25519PrivateKey.generate().sign(self.data)),
             (document([{**row(), "title": "Tampered metadata"}]), self.signature),
-            (b'{"schema":2,"firmwares":[]}', self.key.sign(b'{"schema":2,"firmwares":[]}')),
+            (b'{"schema":3,"firmwares":[]}', self.key.sign(b'{"schema":3,"firmwares":[]}')),
         ]
         for data, signature in candidates:
             def response(req, **kw):

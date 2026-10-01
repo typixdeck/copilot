@@ -397,7 +397,7 @@ class WriterTests(unittest.TestCase):
         for identifier in ['not-published', '../../etc/passwd', ';reboot', '--port=/dev/ttyACM1']:
             with self.assertRaises(WriteError): approved_firmware(identifier)
 
-    def test_all_six_signed_artifacts_complete_same_verified_fake_transport(self):
+    def test_all_signed_artifacts_complete_verified_fake_transport(self):
         repository = Path(__file__).resolve().parents[1]
         selected = bundled_catalog()
         self.assertTrue({'official-20260910', 'official-20260821', 'official-20260815',
@@ -419,6 +419,19 @@ class WriterTests(unittest.TestCase):
                     received = receive_image(stream, authorized, journal.job / 'image.bin')
                 transport = Transport(received)
                 transport.connect = MagicMock(return_value=16 * 1024 * 1024)
+                if firmware.settings_policy == 'preserve-diy-v1':
+                    # Model a supported older application with synthetic settings;
+                    # never bypass the production compatibility check for a new row.
+                    source = repository / 'firmware/typixdeck-diy/0.4.2/typixdeck-diy-0.4.2-full.bin'
+                    backup = bytearray(source.read_bytes())
+                    backup.extend(b'\xff' * (16 * 1024 * 1024 - len(backup)))
+                    settings = bytes(range(256)) * (0x6000 // 256)
+                    backup[0x9000:0xF000] = settings
+                    expected = bytearray(received)
+                    expected[0x9000:0xF000] = settings
+                    transport.data = bytes(expected)
+                    original_read = transport.read
+                    transport.read = lambda size, phase: (transport.call(phase) or bytes(backup)) if phase == 'backup' else original_read(size, phase)
                 self.assertEqual(execute(authorized, received, journal, transport), 0)
                 self.assertEqual(transport.calls, ['enter', 'backup', 'write', 'verify', 'restart', 'close'])
                 final = events[-1]

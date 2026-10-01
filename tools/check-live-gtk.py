@@ -267,7 +267,7 @@ class LiveWindowTests(unittest.TestCase):
             with patch.object(authority, "_public_key", return_value=key.public_key()):
                 versions = []
                 for source, version in zip(sources, ("2.0.0", "1.0.0")):
-                    raw = json.dumps({"schema": 1, "firmwares": [asdict(replace(
+                    raw = json.dumps({"schema": 2, "firmwares": [asdict(replace(
                         source, id="community-current", version=version))]}).encode()
                     versions.append(authority.verify_catalog(raw, key.sign(raw))[0])
                 newest, older = versions

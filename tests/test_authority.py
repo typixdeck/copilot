@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def document(rows):
-    return json.dumps({"schema": 1, "firmwares": rows}, ensure_ascii=False).encode("utf-8")
+    return json.dumps({"schema": 2, "firmwares": rows}, ensure_ascii=False).encode("utf-8")
 
 
 def envelope(raw, signature):
@@ -49,8 +49,8 @@ class BundledGrantTests(unittest.TestCase):
 
     def test_all_bundled_firmwares_have_exact_root_readable_grants(self):
         catalog = module.bundled_catalog()
-        self.assertEqual(len(catalog), 9)
-        self.assertEqual(sum(fw.publisher == "自研" for fw in catalog), 5)
+        self.assertEqual(len(catalog), 10)
+        self.assertEqual(sum(fw.publisher == "自研" for fw in catalog), 6)
         for fw in catalog:
             with self.subTest(firmware=fw.id):
                 self.assertEqual(module.authorize_firmware(fw), fw)
@@ -111,7 +111,7 @@ class SignedGrantTests(unittest.TestCase):
                 module.encode_authorization(fw)
 
     def test_valid_signature_cannot_bypass_catalog_schema_or_board_constraints(self):
-        for raw in (b'{"schema":2,"firmwares":[]}',
+        for raw in (b'{"schema":3,"firmwares":[]}',
                     document([{**future_row(), "chip": "esp32"}]),
                     document([{**future_row(), "flash_offset": 0x10000}]),
                     document([{**future_row(), "script": "command"}]),

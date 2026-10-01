@@ -24,6 +24,8 @@ from .authority import bundled_catalog, receive_authorization
 from .core import inspect_local
 from .device import Board, DeviceError, load_profile
 from .diagnostics import MAX_LOG_EVENTS, MAX_LOG_BYTES, MAX_ELAPSED_MS, log_event
+from .settings import effective_image, SettingsError
+from .companion import CompanionLease, CompanionError
 
 STATE_ROOT = Path('/var/lib/typix-copilot')
 VENDOR_ROOT = Path('/usr/lib/typix-copilot/vendor')
@@ -412,6 +414,7 @@ def commissioning_permit(journal, board, consume=False):
 class SerialTransport:
     def __init__(self, board, journal):
         self.board, self.journal = board, journal
+        self.companion = CompanionLease()
         self.esp = None
         self.connection = None
         self.stage = 'connect'
@@ -653,6 +656,12 @@ def execute(firmware, data, journal, transport):
             raise WriteError('image-mismatch') from None
         if len(data) != firmware.size or hashlib.sha256(data).hexdigest() != firmware.sha256:
             raise WriteError('image-mismatch')
+        lease = getattr(transport, 'companion', None)
+        if lease is not None:
+            try:
+                lease.pause()
+            except CompanionError:
+                raise WriteError('companion-stop') from None
         journal.emit('enter', .11)
         endpoint = transport.enter()
         journal.emit('connect', .15)
@@ -670,15 +679,24 @@ def execute(firmware, data, journal, transport):
         if hashlib.sha256(backup_path.read_bytes()).hexdigest() != digest:
             raise WriteError('backup-incomplete')
         private_write(journal.job / 'backup.json', json.dumps({'bytes': capacity, 'sha256': digest}).encode())
-        del backup
         journal.emit('backup', .44, backup_complete=True, backup_bytes=capacity)
+        try:
+            expected, preserved = effective_image(firmware, data, backup)
+        except SettingsError as exc:
+            raise WriteError(str(exc)) from None
+        del backup
+        if preserved:
+            # Effective bytes contain credentials. Never replace the public
+            # artifact, include their digest in logs, or relax file protection.
+            private_write(journal.job / 'effective-image.bin', expected)
+        journal.emit('backup', .44, settings_preserved=bool(preserved), preserved_bytes=preserved)
         # Durable before erase/write, including GUI disappearance/power-loss cases.
         journal.emit('write', .45, write_started=True)
         journal.hardware_started = True
-        transport.write(data)
+        transport.write(expected)
         journal.emit('verify', .77)
         actual = transport.read(len(data), 'verify')
-        if actual != data or hashlib.sha256(actual).hexdigest() != firmware.sha256:
+        if actual != expected:
             raise WriteError('verify-mismatch')
         journal.emit('restart', .95, verified=True, verified_bytes=len(data), image_sha256=firmware.sha256)
         transport.restart()
@@ -711,6 +729,13 @@ def execute(firmware, data, journal, transport):
             try:
                 journal.emit(journal.record['phase'], journal.record['progress'], durable=True,
                              audit_degraded=True, cleanup_error_type=exception_diagnostics(exc)['error_type'])
+            except Exception:
+                pass
+        lease = getattr(transport, 'companion', None)
+        if lease is not None and not lease.restore(transport.board):
+            try:
+                journal.emit(journal.record['phase'], journal.record['progress'], durable=True,
+                             companion_resume_deferred=True)
             except Exception:
                 pass
 

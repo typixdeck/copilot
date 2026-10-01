@@ -33,10 +33,11 @@ def save(path, data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--key", type=Path, required=True, help="External Ed25519 PEM private key path")
+    parser.add_argument("--index", choices=("index.json", "index-v2.json"), default="index.json")
     args = parser.parse_args()
     if args.key.expanduser().resolve().is_relative_to(ROOT):
         parser.error("Signing key must be outside the repository")
-    raw = (ROOT / "firmware/index.json").read_bytes()
+    raw = (ROOT / "firmware" / args.index).read_bytes()
     runpy.run_path(str(ROOT / "tools/check-firmware-index.py"))["validate_images"](raw)
     key = serialization.load_pem_private_key(args.key.expanduser().read_bytes(), password=None)
     if not isinstance(key, Ed25519PrivateKey):
@@ -47,10 +48,10 @@ def main():
         parser.error("Signing key does not match the installed catalog trust key")
     signature = key.sign(raw)
     trusted.verify(signature, raw)
-    save(ROOT / "firmware/index.json.sig", signature)
-    save(bundle / "firmware-index.json", raw)
-    save(bundle / "firmware-index.json.sig", signature)
-    print("Signed firmware/index.json and refreshed the offline bundle")
+    save(ROOT / "firmware" / (args.index + ".sig"), signature)
+    save(bundle / ("firmware-" + args.index), raw)
+    save(bundle / ("firmware-" + args.index + ".sig"), signature)
+    print(f"Signed firmware/{args.index} and refreshed the offline bundle")
 
 
 if __name__ == "__main__":

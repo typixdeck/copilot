@@ -2,11 +2,13 @@
 
 TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry Pi 主系统上，通过 Launcher 全屏启动。
 
-**0.2.5：修正代理与下载错误提示**。固件目录和下载遵循桌面的 HTTP/HTTPS 代理及 NO_PROXY 配置，继续验证 TLS、签名、SHA-256 和镜像结构。界面与日志区分 DNS、TLS、超时、HTTP 状态、存储及哈希错误。182 项测试通过；CM4 已升级并通过网络下载、完整校验和离线复用 DIY 0.4.1 的实测。完整刷写流程仍处于预发布验收阶段。
+**0.2.6：兼容 DIY 升级保留设置**。第二版签名目录可明确授权保留 Wi-Fi、时区和偏好；只有现有应用摘要与完整分区表均匹配才写入，不兼容会停止。串口通信服务在维护期间暂停，只有原本运行且板载设备恢复正常枚举才恢复。已完成宿主测试；本轮尚未真机刷写验收。
 
 所有目录固件统一「写入」。选择版本后点击写入，确认后自动复用缓存或下载校验，继续系统授权与写入。无需单独下载。启动时验证本仓库的签名固件目录，离线时使用已验证缓存或随包目录。
 
 已镜像官方 2026-09-10、2026-08-21、2026-08-15、2026-08-14 四个版本，保留原文件及固定哈希。官方条目和 DIY 均从本仓库 `firmware/` 下载，原有缓存直接复用。来源与版本清单见 [官方固件目录](firmware/typixdeck-official/README.md)。
+
+本地已加入 [DIY 0.4.4 串口优先与保留设置候选](firmware/typixdeck-diy/0.4.4/README.md)，需要本版 v2 目录；尚未上传或真机验收。
 
 已收录 [DIY 0.4.3 内置应用预发布版](firmware/typixdeck-diy/0.4.3/README.md)：新增计算器、日历和 2048，支持触摸与实体键盘，保留 MIDI、时钟及电量修正。宿主测试和构建已验证，真机验收待完成；刷新签名目录即可发起写入，仍执行完整板级检查。历史版本保留原文件与哈希。
 
@@ -14,7 +16,7 @@ TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry P
 
 ## 使用
 
-选择固件 → **写入** → 确认。已有缓存会直接复用，缺少时自动下载；确认、进度和结果都在同一窗口。完整写入会重置协处理器设置，写入中请勿切换、拔线或断电。
+选择固件 → **写入** → 确认。已有缓存会直接复用，缺少时自动下载；确认、进度和结果都在同一窗口。确认页说明设置影响：明确授权且兼容的 DIY 升级保留设置，历史完整镜像仍重置设置。写入中请勿切换、拔线或断电。
 
 **本地固件**仅管理之前缓存的版本：可再次写入或移除缓存。带有效签名凭据的旧版本，即使后来不在在线目录中，也可离线使用；移除缓存不会删除设备备份或写入记录。
 
@@ -32,7 +34,7 @@ TypixDeck 板载 ESP32-S3 的固件商店，运行在同一设备的 Raspberry P
 
 ```sh
 python3 tools/build-deb.py
-sudo apt install ./dist/typix-copilot_0.2.5-1_arm64.deb
+sudo apt install ./dist/typix-copilot_0.2.6-1_arm64.deb
 install -m 644 /usr/share/applications/typix-copilot.desktop ~/Desktop/typix-copilot.desktop
 ```
 
@@ -40,7 +42,7 @@ install -m 644 /usr/share/applications/typix-copilot.desktop ~/Desktop/typix-cop
 
 ```sh
 PYTHONPATH=src python3 -m unittest discover -s tests -v
-python3 tools/check-firmware-index.py
+python3 tools/check-firmware-index.py --index index-v2.json
 python3 tools/check-live-gtk.py
 ```
 
@@ -79,6 +81,6 @@ Mac 可双击 [Preview.command](Preview.command)，或运行 `./start-preview.sh
 
 软件 Store 分发 Copilot 的 deb，Copilot 管理 ESP32-S3 固件。当前官方方案是重新刷写单 factory 分区，不是多固件常驻引导。
 
-固件发布步骤见 [firmware/README.md](firmware/README.md)。后续新增固件提交版本目录、更新索引并签名后，0.2.0 客户端刷新即可发现和发起写入，无需为每个版本重打 Copilot deb。签名仅授权目录中的准确镜像，不允许跳过板级、备份和回读校验。
+固件发布步骤见 [firmware/README.md](firmware/README.md)。后续新增固件提交版本目录、更新索引并签名后，0.2.6 客户端刷新 v2 目录即可发现和发起写入，无需为每个版本重打 Copilot deb。签名仅授权目录中的准确镜像，不允许跳过板级、备份和回读校验。
 
 硬件依据：[官方固件源码](https://github.com/TypixNode/TypixDeck-esp32s3-firmware)、[官方电路设计](https://github.com/TypixNode/TypixDeck-schematics)。实现范围见 [固件来源](docs/ARTIFACT-SOURCES.md)；扩展包格式见 [协议草案](docs/FIRMWARE-FORMAT.md)。

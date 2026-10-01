@@ -236,7 +236,8 @@ class LiveCopilotApplication(CopilotApplication):
         info = add(row, box(spacing=10), True)
         add(info, label("完整固件", "title"))
         add(info, label("TypixDeck · 板载 ESP32-S3", "muted"))
-        add(info, label("写入将重置设置" if fw.nvs_reset else "设置影响见版本说明", "warning"))
+        add(info, label("兼容 DIY 升级保留 Wi-Fi 和设置" if fw.settings_policy == "preserve-diy-v1" else
+                        "写入将重置设置" if fw.nvs_reset else "设置影响见版本说明", "warning"))
         details = Gtk.Expander(label="来源与校验详情")
         detail_box = box(spacing=8)
         for text in (fw.summary, fw.layout, fw.filename, "SHA256 " + fw.sha256, fw.source_url):
@@ -436,7 +437,8 @@ class LiveCopilotApplication(CopilotApplication):
         add(page, label("确认写入", "heading"))
         card = add(page, box(spacing=16, style="card"))
         add(card, label(f"{fw.title} · {fw.version}", "title", True))
-        add(card, label("完整写入将重置设置" if fw.nvs_reset else "设置影响见版本说明", "warning"))
+        add(card, label("兼容 DIY 升级保留设置；不兼容时停止" if fw.settings_policy == "preserve-diy-v1" else
+                        "完整写入将重置设置" if fw.nvs_reset else "设置影响见版本说明", "warning"))
         add(card, label("请连接外部电源。", "muted", True))
         add(card, label("将自动使用本地缓存；没有缓存时下载并校验。", "small", True))
         add(card, label("写入过程中请勿切换、拔线或断电。", "warning", True))
@@ -535,8 +537,9 @@ class LiveCopilotApplication(CopilotApplication):
             "校验未完成" if result.get("failed_phase") == "verify" else "写入未完成")
         self.operation_title.set_text(title)
         recovery_text = "需要恢复；备份保留在本机" if result.get("backup_complete") else "需要恢复；请检查本机维护记录"
+        needs_recovery = result.get("write_started") or (result.get("boot_requested") and not result.get("reconnected"))
         self.operation_warning.set_text("运行版本待确认" if succeeded else (
-            recovery_text if result.get("write_started") else "未开始写入；请检查原因后重新确认"))
+            recovery_text if needs_recovery else "未开始写入；请检查原因后重新确认"))
         if result.get('exception_used'):
             self.operation_warning.set_text(self.operation_warning.get_text() + " · 本次供电寄存器未验证")
         key = self._history_key(result)
